@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# dlt
+.dlt/
+pipeline_state/
+
+# dbt
+target/
+dbt_packages/
+logs/
+
+# SQL Server / ODBC
+*.mdf
+*.ldf
+
+# Environment / secrets — NEVER commit these
+.env
+*.env
+secrets.toml
+.dlt/secrets.toml
+
+# OS
+.DS_Store
+Thumbs.db

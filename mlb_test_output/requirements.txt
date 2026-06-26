@@ -1,0 +1,2 @@
+# Auto-generation failed — add dependencies manually
+# Run: pip install pipreqs && pipreqs . --force
