@@ -1451,6 +1451,7 @@ if ($response.health -ne 'green') {
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+{%- raw %}
 // ── Tab memory ──────────────────────────────────────────────────────────────
 const TAB_KEY = 'etlmonitor_active_tab';
 document.addEventListener('DOMContentLoaded', () => {
@@ -1472,9 +1473,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ── History expand ──────────────────────────────────────────────────────────
 function toggleModelHistory(summaryRow, modelName) {
+  // Sanitise the same way the Jinja id= attribute does
   const safeId    = modelName.replace(/[\s.]/g, '_');
   const detailRow = document.getElementById('detail-' + safeId);
-  if (!detailRow) return;
+  if (!detailRow) {
+    console.error('toggleModelHistory: detail row not found for id=detail-' + safeId
+                + '  (modelName=' + modelName + ')');
+    return;
+  }
   const isOpen = !detailRow.classList.contains('d-none');
   const icon   = summaryRow.querySelector('.expand-icon i');
   if (isOpen) {
@@ -1487,6 +1493,10 @@ function toggleModelHistory(summaryRow, modelName) {
   if (icon) icon.className = 'bi bi-chevron-down';
   summaryRow.style.outline = '2px solid #7c83fd44';
   const inner = detailRow.querySelector('.detail-inner');
+  if (!inner) {
+    console.error('toggleModelHistory: .detail-inner not found inside detailRow');
+    return;
+  }
   if (inner.dataset.loaded === '1') return;
   fetch('/api/history/' + encodeURIComponent(modelName))
     .then(r => r.json())
@@ -1525,7 +1535,10 @@ function toggleModelHistory(summaryRow, modelName) {
 function toggleLineageRow(summaryRow, modelName) {
   const safeId    = modelName.replace(/[\s.]/g, '_');
   const detailRow = document.getElementById('ldetail-' + safeId);
-  if (!detailRow) return;
+  if (!detailRow) {
+    console.error('toggleLineageRow: detail row not found for id=ldetail-' + safeId);
+    return;
+  }
   const isOpen = detailRow.classList.contains('open');
   const icon   = summaryRow.querySelector('.lineage-expand-icon i');
   if (isOpen) {
@@ -1538,8 +1551,14 @@ function toggleLineageRow(summaryRow, modelName) {
   if (icon) icon.className = 'bi bi-chevron-down';
   summaryRow.style.outline = '2px solid #7c83fd44';
   const inner = detailRow.querySelector('.lineage-col-inner');
+  if (!inner) {
+    console.error('toggleLineageRow: .lineage-col-inner not found');
+    return;
+  }
   if (inner.dataset.loaded === '1') return;
-  fetch('/api/lineage/' + encodeURIComponent(modelName))
+  // Strip schema prefix before hitting the API (model_lineage stores bare names)
+  const apiName = modelName.includes('.') ? modelName.split('.').pop() : modelName;
+  fetch('/api/lineage/' + encodeURIComponent(apiName))
     .then(r => r.json())
     .then(data => {
       if (!data.ok) { inner.innerHTML = `<div class="p-2 text-danger">Error: ${data.error}</div>`; return; }
@@ -1588,7 +1607,7 @@ function toggleLineageRow(summaryRow, modelName) {
                  color:#60a5fa;border:1px solid #2d5082;border-radius:3px;cursor:pointer">
           &#128196; View full source
         </button>
-        <pre id="${preId}" style="${preStyle};display:none;margin-top:4px;color:#86efac"></pre>`;
+        <pre id="${preId}" style="${preStyle};display:none;margin-top:4px;color:#86efac;white-space:pre;word-break:normal;overflow-x:auto"></pre>`;
         return exprHtml + btn;
       }
 
@@ -1610,21 +1629,127 @@ function toggleLineageRow(summaryRow, modelName) {
     .catch(e => { inner.innerHTML = `<div class="p-2 text-danger">${e}</div>`; });
 }
 
+// ── Surrogate key source loader ─────────────────────────────────────────────
+// Called by the "View full source" button on KEY-type columns.
+// Fetches the raw .sql file, extracts the generate_surrogate_key(...)
+// block for the specific column, and displays it in a <pre> below the button.
+function loadSurrogateSource(modelName, columnName, btnId, preId) {
+  const btn = document.getElementById(btnId);
+  const pre = document.getElementById(preId);
+  if (!btn || !pre) return;
+
+  // If already loaded, just toggle visibility
+  if (pre.dataset.loaded === '1') {
+    pre.style.display = pre.style.display === 'none' ? '' : 'none';
+    btn.textContent   = pre.style.display === 'none' ? '\uD83D\uDCC4 View full source' : '\uD83D\uDCC4 Hide source';
+    return;
+  }
+
+  btn.textContent = 'Loading…';
+
+  fetch('/api/model-source/' + encodeURIComponent(modelName))
+    .then(r => r.json())
+    .then(data => {
+      if (!data.ok) {
+        pre.style.display = '';
+        pre.textContent   = 'Error: ' + (data.error || 'unknown');
+        pre.dataset.loaded = '1';
+        btn.textContent   = '\uD83D\uDCC4 Hide source';
+        return;
+      }
+
+      const src = data.source || '';
+
+      // ── Extract the surrogate_key block for this column ──────────────
+      // Strategy: find "generate_surrogate_key([" then capture everything
+      // up to and including "]) as <column_name>" (case-insensitive).
+      // Handles multi-line Jinja macro calls like:
+      //   {{ dbt_utils.generate_surrogate_key([
+      //       'col_a',
+      //       'col_b'
+      //   ]) }} as draft_key,
+      const colEscaped = columnName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // Match from {{ through to ]) }} as <column_name>
+      const pattern = new RegExp(
+        '\\{\\{[\\s\\S]*?generate_surrogate_key\\([\\s\\S]*?\\]\\s*\\)\\s*\\}\\}\\s*as\\s+' + colEscaped,
+        'i'
+      );
+      const match = src.match(pattern);
+
+      let display;
+      if (match) {
+        display = match[0].trim();
+      } else {
+        // Fallback: show a wider window around the column name mention
+        const idx = src.toLowerCase().indexOf(columnName.toLowerCase());
+        if (idx !== -1) {
+          const start = Math.max(0, src.lastIndexOf('\n', idx - 200));
+          const end   = Math.min(src.length, src.indexOf('\n', idx + 200));
+          display = src.slice(start, end === -1 ? src.length : end).trim()
+                  + '\n\n[Full match not found — showing context around column name]';
+        } else {
+          display = src;
+        }
+      }
+
+      pre.textContent    = display;
+      pre.style.display  = '';
+      pre.dataset.loaded = '1';
+      btn.textContent    = '\uD83D\uDCC4 Hide source';
+    })
+    .catch(e => {
+      pre.textContent   = 'Fetch error: ' + e;
+      pre.style.display = '';
+      pre.dataset.loaded = '1';
+      btn.textContent   = '\uD83D\uDCC4 Hide source';
+    });
+}
+
 function openLineageForModel(modelName) {
-  const lineageTab = document.querySelector('[data-bs-target="#tab-lineage"]');
-  if (lineageTab) bootstrap.Tab.getOrCreateInstance(lineageTab).show();
-  setTimeout(() => {
-    const safeId     = modelName.replace(/[\s.]/g, '_');
-    const summaryRow = document.querySelector(`#lineageTbody tr[data-model="${modelName}"]`);
-    const detailRow  = document.getElementById('ldetail-' + safeId);
-    if (!summaryRow) return;
-    summaryRow.scrollIntoView({ behavior:'smooth', block:'center' });
+  const lineageTabBtn = document.querySelector('[data-bs-target="#tab-lineage"]');
+  if (!lineageTabBtn) return;
+
+  // dbo.pipeline may store names like "baseball_dw.dim_draft" while
+  // dbo.model_lineage stores just "dim_draft".
+  // Strip everything up to and including the last dot so both match.
+  const bareName = modelName.includes('.') ? modelName.split('.').pop() : modelName;
+
+  function _scrollAndOpen() {
+    const safeId = bareName.replace(/[\s.]/g, '_');
+
+    // Try exact match first, then bare-name match
+    let summaryRow = document.querySelector('#lineageTbody tr[data-model="' + bareName + '"]');
+    if (!summaryRow) {
+      summaryRow = document.querySelector('#lineageTbody tr[data-model="' + modelName + '"]');
+    }
+    if (!summaryRow) {
+      console.warn('openLineageForModel: no lineage row found for "' + bareName + '" or "' + modelName + '"');
+      return;
+    }
+
+    // Use the actual data-model value from the found row for the detail ID
+    const actualName = summaryRow.dataset.model || bareName;
+    const actualSafe = actualName.replace(/[\s.]/g, '_');
+    const detailRow  = document.getElementById('ldetail-' + actualSafe);
+
+    summaryRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
     summaryRow.style.outline = '2px solid #7c83fd';
-    setTimeout(() => {
-      if (detailRow && !detailRow.classList.contains('open')) toggleLineageRow(summaryRow, modelName);
-      setTimeout(() => { summaryRow.style.outline = '2px solid #7c83fd44'; }, 800);
-    }, 300);
-  }, 200);
+    setTimeout(() => { summaryRow.style.outline = '2px solid #7c83fd44'; }, 1200);
+    if (detailRow && !detailRow.classList.contains('open')) {
+      toggleLineageRow(summaryRow, actualName);
+    }
+  }
+
+  const tabPane = document.getElementById('tab-lineage');
+  if (tabPane && tabPane.classList.contains('active')) {
+    _scrollAndOpen();
+  } else {
+    lineageTabBtn.addEventListener('shown.bs.tab', function handler() {
+      lineageTabBtn.removeEventListener('shown.bs.tab', handler);
+      _scrollAndOpen();
+    });
+    bootstrap.Tab.getOrCreateInstance(lineageTabBtn).show();
+  }
 }
 
 let _lineageLayerFilter = 'all';
@@ -1863,65 +1988,6 @@ function loadLineageTests() {
     })
     .catch(e => {
       tbody.innerHTML = `<tr><td colspan="10" class="text-danger p-3">${e}</td></tr>`;
-    });
-}
-
-{% raw %}
-// ── Surrogate key full source viewer ────────────────────────────────────────
-function loadSurrogateSource(modelName, columnName, btnId, preId) {
-  const btn = document.getElementById(btnId);
-  const pre = document.getElementById(preId);
-  if (!btn || !pre) return;
-
-  // Toggle off if already loaded
-  if (pre.dataset.loaded === '1') {
-    pre.style.display = pre.style.display === 'none' ? '' : 'none';
-    btn.textContent = pre.style.display === 'none' ? '📄 View full source' : '🔼 Hide source';
-    return;
-  }
-
-  btn.textContent = '⏳ Loading…';
-  btn.disabled = true;
-
-  fetch('/api/model-source/' + encodeURIComponent(modelName))
-    .then(r => r.json())
-    .then(data => {
-      if (!data.ok) {
-        pre.textContent = 'Error: ' + data.error;
-        pre.style.display = '';
-        btn.textContent = '⚠ Source not found';
-        return;
-      }
-      // Extract just the surrogate_key call block for this column.
-      // Pattern: {{ dbt_utils.generate_surrogate_key([...]) }}
-      //                          as <column_name>
-      const src = data.source;
-      const colLower = columnName.toLowerCase();
-      // Try to find the generate_surrogate_key expression that maps to this column.
-      // Match from {{ to the alias line containing the column name.
-      const re = /(\{\{[\s\S]*?generate_surrogate_key[\s\S]*?\}\}[\s\S]*?as\s+)/gi;
-      let bestMatch = null;
-      let m;
-      while ((m = re.exec(src)) !== null) {
-        // grab from the {{ to end of alias line
-        const afterAlias = src.indexOf('\n', m.index + m[0].length);
-        const chunk = src.slice(m.index, afterAlias > -1 ? afterAlias : m.index + m[0].length + 40);
-        if (chunk.toLowerCase().includes(colLower)) {
-          bestMatch = chunk.trim();
-          break;
-        }
-      }
-      pre.textContent = bestMatch || src;  // fallback: show full source
-      pre.style.display = '';
-      pre.dataset.loaded = '1';
-      btn.textContent = '🔼 Hide source';
-      btn.disabled = false;
-    })
-    .catch(e => {
-      pre.textContent = 'Fetch error: ' + e;
-      pre.style.display = '';
-      btn.textContent = '⚠ Error';
-      btn.disabled = false;
     });
 }
 
