@@ -1,0 +1,61 @@
+name: 'baseball_dw'
+version: '1.0.0'
+config-version: 2
+
+profile: 'baseball_dw'
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  baseball_dw:
+    # Stage
+    stage:
+      +materialized: view
+      +tags: ["stg"]
+    # Dimension models
+    dimensions:
+      +materialized: table
+      +tags: ["dimension"]
+    # Mart
+    mart:
+      +materialized: table
+      +tags: ["mart"]
+    # Intermediate
+    intermediate:
+      +materialized: table
+      +tags: ["int"]
+      
+    # Fact models
+    facts:
+      +materialized: incremental
+      +tags: ["fact"]
+      +on_schema_change: "sync_all_columns"
+      
+   
+
+vars:
+  # Project-specific variables
+  quarantine_schema: quarantine                # schema where quarantine tables are created
+  start_date: '2020-01-01'
+  end_date: '2099-12-31'
+  
+
+# Tests configuration
+tests:
+  baseball_dw:
+    +store_failures: true
+    +store_failures_as: table
+    +schema: test_failures              
+    
+on-run-end:
+  - "{{ dbt_artifacts.upload_results(results) }}"
+  - "{{ log_test_results(results) }}"

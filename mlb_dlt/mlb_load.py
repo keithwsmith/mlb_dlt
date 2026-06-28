@@ -606,11 +606,13 @@ def get_game_pks_from_dw(start_year, end_year):
     cursor = conn.cursor()
     # Only fetch game_pks that exist in dw.games (enforces referential integrity
     # at load time — prevents game_details orphans from the start).
+    # games have to be Final and Not game_type E,A
     cursor.execute("""
-        SELECT game_pk FROM dw.games
-        WHERE season BETWEEN ? AND ?
-        AND status__abstract_game_state = 'Final'
-    """, (start_year, end_year))
+    SELECT game_pk FROM dw.games
+    WHERE season BETWEEN ? AND ?
+      AND status__abstract_game_state = 'Final'
+      AND game_type NOT IN ('E', 'A')
+""", (start_year, end_year))
     rows = cursor.fetchall()
     conn.close()
     print(f"[game_details] Found {len(rows)} eligible games in dw.games "

@@ -1,0 +1,660 @@
+version: 2
+
+sources:
+  - name: dw
+    schema: dw
+
+
+models:
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # STG_PLAY_EVENTS
+  # One row per pitch / play event within a game at-bat.
+  # Source: dw.play_events (loaded via dlt from MLB Stats API game feed)
+  # ────────────────────────────────────────────────────────────────────────────
+  - name: stg_play_events
+    description: >
+      Cleaned and renamed pitch-level events from the MLB game feed.
+      Each row represents a single pitch or play event within an at-bat.
+      Includes Statcast pitch data (velocity, movement, spin), hit data
+      (exit velocity, launch angle), strike zone coordinates, and review
+      information.
+
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - event_id
+          config:
+            severity: error
+
+    columns:
+
+      # ── Identifiers ──────────────────────────────────────────────────────
+      - name: event_id
+        description: Surrogate key — dlt-assigned unique row identifier (_dlt_id).
+        tests:
+          - not_null
+          - unique
+
+      - name: game_pk
+        description: MLB primary key for the game this event belongs to.
+        tests:
+          - not_null
+
+      - name: at_bat_index
+        description: >
+          Zero-based index of the at-bat within the game.
+          Combine with game_pk to identify a specific plate appearance.
+        tests:
+          - not_null
+
+      - name: play_id
+        description: MLB-assigned identifier for the play within the at-bat.
+
+      - name: pfx_id
+        description: Pitch f/x legacy identifier string.
+
+      - name: pitch_number
+        description: Sequential pitch number within the at-bat (1 = first pitch).
+
+      - name: event_index
+        description: >
+          Raw [index] value from the source — position of this event in
+          the full play-by-play sequence for the game.
+
+      - name: season
+        description: MLB season year (e.g. 2026).
+        tests:
+          - not_null
+
+      - name: load_id
+        description: dlt load batch identifier (_dlt_load_id). Used for incremental loads.
+        tests:
+          - not_null
+
+      # ── Timestamps ───────────────────────────────────────────────────────
+      - name: start_time
+        description: UTC timestamp when the pitch/play event started.
+
+      - name: end_time
+        description: UTC timestamp when the pitch/play event ended.
+
+      # ── Event Classification ─────────────────────────────────────────────
+      - name: event_type
+        description: >
+          High-level event type (e.g. 'pitch', 'action', 'no_pitch').
+          Maps to the [type] column in the source.
+
+      - name: is_pitch
+        description: Boolean — true if this event is a pitched ball.
+
+      - name: is_in_play
+        description: Boolean — true if the batter put the ball in play.
+
+      # ── Pitch Result ─────────────────────────────────────────────────────
+      - name: pitch_result_code
+        description: Single-character MLB pitch result code (e.g. 'S', 'B', 'X').
+
+      - name: pitch_result_description
+        description: Human-readable description of the pitch result (e.g. 'Called Strike').
+
+      - name: call_code
+        description: Umpire call code for the pitch.
+
+      - name: call_description
+        description: Umpire call description (e.g. 'Called Strike', 'Ball').
+
+      - name: ball_color
+        description: Display color string used in MLB Gameday visualisations.
+
+      - name: is_in_play_detail
+        description: Boolean from the details block — pitch landed in play.
+
+      - name: is_strike
+        description: Boolean — pitch was a strike by rule.
+
+      - name: is_ball
+        description: Boolean — pitch was a ball by rule.
+
+      - name: is_out
+        description: Boolean — pitch/play resulted in an out.
+
+      # ── Count State ──────────────────────────────────────────────────────
+      - name: balls
+        description: Ball count when this pitch was thrown.
+        tests:
+          - accepted_values:
+              values: [0, 1, 2, 3, 4, 5]
+              config:
+                severity: warn
+
+      - name: strikes
+        description: Strike count when this pitch was thrown.
+        tests:
+          - accepted_values:
+              values: [0, 1, 2, 3, 4, 5, 6]
+              config:
+                severity: warn
+
+      - name: outs_when_up
+        description: Number of outs when this pitch was thrown.
+        tests:
+          - accepted_values:
+              values: [0, 1, 2]
+              config:
+                severity: warn
+
+      # ── Batter ───────────────────────────────────────────────────────────
+      - name: batter_id
+        description: MLB player ID of the batter.
+        tests:
+          - not_null
+
+      - name: batter_name
+        description: >
+          Full name of the batter. Defaults to 'unknown' when the source
+          value is NULL or empty (via ISNULL/NULLIF transformation).
+
+      - name: batter_side
+        description: Batting side for this plate appearance ('L', 'R', or 'S').
+        tests:
+          - accepted_values:
+              values: ['L', 'R', 'S']
+              config:
+                severity: warn
+
+      # ── Pitcher ──────────────────────────────────────────────────────────
+      - name: pitcher_id
+        description: MLB player ID of the pitcher.
+        tests:
+          - not_null
+
+      - name: pitcher_name
+        description: >
+          Full name of the pitcher. Defaults to 'unknown' when the source
+          value is NULL or empty.
+
+      - name: pitcher_hand
+        description: Pitching hand ('L' or 'R').
+        tests:
+          - accepted_values:
+              values: ['L', 'R']
+              config:
+                severity: warn
+
+      # ── Pitch Type ───────────────────────────────────────────────────────
+      - name: pitch_type_code
+        description: >
+          Statcast pitch type code (e.g. 'FF'=4-seam fastball, 'SL'=slider,
+          'CH'=changeup, 'CU'=curveball, 'SI'=sinker, 'KC'=knuckle-curve).
+
+      - name: pitch_type_description
+        description: Human-readable pitch type name.
+
+      - name: pitch_trail_color
+        description: Hex color string used to render this pitch type in Gameday.
+
+      # ── Pitch Velocity ───────────────────────────────────────────────────
+      - name: release_speed
+        description: Pitch speed at the point of release (mph).
+
+      - name: plate_speed
+        description: Pitch speed as it crosses the plate (mph).
+
+      - name: plate_time
+        description: Time (seconds) for the pitch to travel from release to plate.
+
+      - name: extension
+        description: Pitcher extension — distance (feet) in front of the rubber at release.
+
+      # ── Pitch Location ───────────────────────────────────────────────────
+      - name: plate_x
+        description: >
+          Horizontal position of the pitch at the front of home plate (feet).
+          0 = centre, negative = catcher's left (batter's right).
+
+      - name: plate_z
+        description: >
+          Vertical position of the pitch at the front of home plate (feet above ground).
+
+      # ── Pitch Release Point ──────────────────────────────────────────────
+      - name: release_pos_x
+        description: Pitcher's hand position at release — x axis (feet), catcher's perspective.
+
+      - name: release_pos_y
+        description: Pitcher's hand position at release — y axis (feet from plate).
+
+      - name: release_pos_z
+        description: Pitcher's hand position at release — z axis (feet above ground).
+
+      # ── Pitch Velocity Components ────────────────────────────────────────
+      - name: vx0
+        description: Initial pitch velocity component in the x direction (ft/s).
+
+      - name: vy0
+        description: Initial pitch velocity component in the y direction (ft/s, toward plate).
+
+      - name: vz0
+        description: Initial pitch velocity component in the z direction (ft/s).
+
+      # ── Pitch Acceleration ───────────────────────────────────────────────
+      - name: ax
+        description: Pitch acceleration in the x direction (ft/s²).
+
+      - name: ay
+        description: Pitch acceleration in the y direction (ft/s²).
+
+      - name: az
+        description: Pitch acceleration in the z direction (ft/s²) — includes gravity.
+
+      # ── Pitch Movement (pfx) ─────────────────────────────────────────────
+      - name: pfx_x
+        description: >
+          Horizontal movement of the pitch relative to a spin-less ball (inches).
+          Measured over the last 40 feet to the plate.
+
+      - name: pfx_z
+        description: >
+          Vertical movement of the pitch relative to a spin-less ball (inches).
+          Positive = rises more than expected.
+
+      # ── Pitch Breaks ─────────────────────────────────────────────────────
+      - name: break_angle
+        description: Angle (degrees) of the pitch break as it crosses the plate.
+
+      - name: break_length
+        description: Total distance (inches) the pitch breaks from its initial trajectory.
+
+      - name: break_y
+        description: Distance from the plate (feet) where the break begins.
+
+      - name: break_vertical
+        description: Vertical break of the pitch (inches) — total including gravity.
+
+      - name: break_vertical_induced
+        description: Induced vertical break (inches) — spin-driven component only, excluding gravity.
+
+      - name: break_horizontal
+        description: Horizontal break of the pitch (inches).
+
+      - name: spin_rate
+        description: Pitch spin rate (RPM) measured by Statcast.
+
+      - name: spin_direction
+        description: Pitch spin direction (degrees, 0–360).
+
+      # ── Strike Zone ──────────────────────────────────────────────────────
+      - name: zone
+        description: >
+          MLB strike zone region (1–9 = in zone, 11–14 = out of zone).
+          Used for heat-map visualisations.
+
+      - name: sz_top
+        description: Top of the batter's personalised strike zone (feet above ground).
+
+      - name: sz_bot
+        description: Bottom of the batter's personalised strike zone (feet above ground).
+
+      - name: sz_width
+        description: Width of the strike zone (feet).
+
+      - name: sz_depth
+        description: Depth of the strike zone (feet, front to back of plate).
+
+      - name: pitch_type_confidence
+        description: Confidence score (0–1) for the Statcast pitch classification.
+
+      # ── Strike Zone Info (detailed) ──────────────────────────────────────
+      - name: sz_info_is_strike
+        description: Boolean — detailed strike zone calculation result.
+
+      - name: sz_info_top
+        description: Precise strike zone top from detailed calculation (feet).
+
+      - name: sz_info_bot
+        description: Precise strike zone bottom from detailed calculation (feet).
+
+      - name: sz_info_width_inches
+        description: Strike zone width in inches from detailed calculation.
+
+      - name: sz_info_depth_inches
+        description: Strike zone depth in inches from detailed calculation.
+
+      - name: sz_info_edge_distance
+        description: Distance (inches) from pitch location to nearest strike zone edge.
+
+      - name: baseball_diameter_inches
+        description: Official baseball diameter used in strike zone edge calculations (inches).
+
+      - name: sz_info_plate_x
+        description: Plate-crossing x coordinate used in detailed SZ calculation.
+
+      - name: sz_info_plate_y
+        description: Plate-crossing y coordinate used in detailed SZ calculation.
+
+      - name: sz_info_plate_z
+        description: Plate-crossing z coordinate used in detailed SZ calculation.
+
+      # ── Broadcast Coordinates ────────────────────────────────────────────
+      - name: broadcast_x
+        description: Legacy broadcast/Gameday x coordinate (pixels, not feet).
+
+      - name: broadcast_y
+        description: Legacy broadcast/Gameday y coordinate (pixels, not feet).
+
+      # ── Hit Data ─────────────────────────────────────────────────────────
+      - name: exit_velocity
+        description: Batted ball exit velocity off the bat (mph). NULL for non-contact events.
+
+      - name: launch_angle
+        description: >
+          Vertical angle (degrees) at which the ball leaves the bat.
+          Negative = downward, 0 = level, positive = upward.
+
+      - name: hit_distance
+        description: Total projected distance of the batted ball (feet).
+
+      - name: trajectory
+        description: >
+          Batted ball trajectory category (e.g. 'ground_ball', 'line_drive',
+          'fly_ball', 'popup'). Defaults to 'unknown' when source is NULL/empty.
+
+      - name: hit_hardness
+        description: Statcast hit hardness classification ('soft', 'medium', 'hard').
+
+      - name: hit_location
+        description: Field zone number where the ball was fielded (1–9, matches position numbers).
+
+      - name: hit_coord_x
+        description: Spray chart x coordinate of the batted ball landing location (pixels).
+
+      - name: hit_coord_y
+        description: Spray chart y coordinate of the batted ball landing location (pixels).
+
+      # ── Runner / Violation ───────────────────────────────────────────────
+      - name: is_runner_going
+        description: Boolean — a baserunner was in motion when the pitch was thrown.
+
+      - name: disengagement_num
+        description: Pitch clock disengagement count for the pitcher this at-bat.
+
+      - name: violation_type
+        description: Type of pitch clock / balk violation, if any.
+
+      - name: violation_description
+        description: Human-readable description of the violation.
+
+      - name: violation_player_id
+        description: MLB player ID of the player charged with the violation.
+
+      # ── Review ───────────────────────────────────────────────────────────
+      - name: has_review
+        description: Boolean — a manager's challenge review was triggered on this play.
+
+      - name: review_is_overturned
+        description: Boolean — the original call was overturned on review.
+
+      - name: review_in_progress
+        description: Boolean — the review was still in progress at the time of data capture.
+
+      - name: review_type
+        description: Type of review (e.g. 'manager_challenge', 'umpire_review').
+
+      - name: review_challenge_team_id
+        description: MLB team ID of the team that initiated the challenge.
+
+      - name: review_player_id
+        description: MLB player ID associated with the reviewed play.
+
+      - name: review_player_name
+        description: Full name of the player associated with the reviewed play.
+
+      - name: review_player_link
+        description: MLB API link for the reviewed player.
+
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # STG_PLAYER_TRANSACTIONS
+  # One row per roster transaction (IL placement, trade, DFA, reinstatement, etc.)
+  # Source: dw.player_transactions (loaded via dlt from MLB transactions endpoint)
+  # ────────────────────────────────────────────────────────────────────────────
+  - name: stg_player_transactions
+    description: >
+      Cleaned roster transaction records from the MLB Stats API transactions
+      endpoint. Each row represents a single roster move such as a trade,
+      IL placement, reinstatement, option, or DFA. Because a player can have
+      multiple transactions of the same type in a season (e.g. two separate
+      IL stints), the natural key is transaction_id, not
+      (player_id, type_code, season).
+
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - transaction_id
+          config:
+            severity: error
+
+    columns:
+
+      # ── Identifiers ──────────────────────────────────────────────────────
+      - name: transaction_id
+        description: >
+          MLB-assigned unique identifier for this transaction. Natural primary
+          key — each transaction has its own ID even when the same player has
+          multiple transactions of the same type.
+        tests:
+          - not_null
+          - unique
+
+      - name: _dlt_id
+        description: dlt surrogate row identifier.
+        tests:
+          - not_null
+          - unique
+
+      - name: _dlt_load_id
+        description: dlt load batch identifier. Used for incremental loads.
+        tests:
+          - not_null
+
+      # ── Player ───────────────────────────────────────────────────────────
+      - name: player_id
+        description: MLB player ID of the player involved in the transaction.
+        tests:
+          - not_null:
+              config:
+                where: "transaction_category = 'player'"
+
+      - name: player_name
+        description: Full name of the player at the time of the transaction.
+
+      # ── Dates ────────────────────────────────────────────────────────────
+      - name: transaction_date
+        description: >
+          Date the transaction was officially recorded (maps to 'date' in source).
+          Use this as the primary transaction date.
+        tests:
+          - not_null
+
+      - name: effective_date
+        description: >
+          Date the transaction takes effect (may differ from transaction_date
+          for retroactive placements).
+
+      - name: resolution_date
+        description: >
+          Date the transaction was resolved (e.g. date player was reinstated
+          from the IL after a placement).
+
+      # ── Transaction Type ─────────────────────────────────────────────────
+      - name: type_code
+        description: >
+          MLB transaction type code (e.g. 'IL'=Injured List placement,
+          'RA'=Reinstated, 'DFA'=Designated for Assignment, 'TR'=Trade,
+          'SC'=Signed Contract, 'OP'=Optioned to minors, 'SU'=Suspended).
+        tests:
+          - not_null
+
+      - name: type_desc
+        description: Human-readable transaction type description.
+
+      - name: transaction_description
+        description: >
+          Full free-text description of the transaction as provided by MLB
+          (e.g. 'Placed on the 10-Day Injured List, right hamstring strain').
+
+      # ── Teams ────────────────────────────────────────────────────────────
+      - name: to_team_id
+        description: >
+          MLB team ID of the destination team. Populated for trades and
+          minor-league options; NULL for IL placements.
+
+      - name: to_team_name
+        description: Name of the destination team.
+
+      - name: from_team_id
+        description: >
+          MLB team ID of the originating team. Populated for trades;
+          NULL for non-trade transactions.
+
+      - name: from_team_name
+        description: Name of the originating team.
+
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # STG_ROSTERS
+  # Point-in-time 40-man roster snapshot per player / team / season.
+  # Source: dw.rosters (loaded via dlt from MLB teams/{id}/roster/40Man endpoint)
+  # Note: use stg_player_transactions for full IL history; this table reflects
+  #       the roster state at the time the pipeline last ran.
+  # ────────────────────────────────────────────────────────────────────────────
+  - name: stg_rosters
+    description: >
+      Point-in-time 40-man roster snapshot. Each row represents a player's
+      roster membership, position, and status for a given team and season at
+      the time the dlt pipeline was executed.
+
+      Important: this is a snapshot, NOT a transaction log. A player who was
+      placed on the IL twice in a season will appear once (current status only).
+      For full IL/transaction history use stg_player_transactions instead.
+
+      If the pipeline runs daily, add snapshot_date to the primary key so
+      status changes can be tracked over time.
+
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - _dlt_id
+          config:
+            severity: error
+
+    columns:
+
+      # ── Identifiers ──────────────────────────────────────────────────────
+      - name: _dlt_id
+        description: dlt surrogate row identifier. Primary key for this snapshot.
+        tests:
+          - not_null
+          - unique
+
+      - name: _dlt_load_id
+        description: >
+          dlt load batch identifier. Identifies which pipeline run produced
+          this snapshot. Use this to reconstruct point-in-time roster states
+          across multiple daily runs.
+        tests:
+          - not_null
+
+      # ── Player ───────────────────────────────────────────────────────────
+      - name: player_id
+        description: MLB player ID (maps to person__id in source).
+        tests:
+          - not_null
+
+      - name: full_name
+        description: Player's full name at time of snapshot.
+
+      - name: jersey_number
+        description: >
+          Player's jersey number as a string (may include leading zeros or
+          non-numeric values for prospects).
+
+      # ── Position ─────────────────────────────────────────────────────────
+      - name: position__code
+        description: >
+          Position code (e.g. '1'=Pitcher, '2'=Catcher, '3'=1B, '4'=2B,
+          '5'=3B, '6'=SS, '7'=LF, '8'=CF, '9'=RF, '10'=DH, 'O'=OF, 'Y'=TWP).
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['1','2','3','4','5','6','7','8','9','10','O','Y','IF','OF',11,12,I]
+              config:
+                severity: warn
+
+      - name: position__name
+        description: Full position name (e.g. 'Pitcher', 'Catcher', 'Shortstop').
+
+      - name: position__type
+        description: Position type grouping (e.g. 'Pitcher', 'Catcher', 'Infielder', 'Outfielder', 'Hitter').
+
+      - name: position__abbreviation
+        description: Short position abbreviation displayed on rosters (e.g. 'SP', 'C', 'SS', 'LF', 'DH').
+
+      # ── Roster Status ─────────────────────────────────────────────────────
+      - name: status__code
+        description: >
+          MLB roster status code at time of snapshot.
+          Common values:
+            40M	=   Forty Man
+            A	=   Active
+            ADM	=   Administrative Leave
+            ASG	=   Assigned to New Team/Level
+            BRV	=   Bereavement List
+            CL	=   Claimed
+            D10	=   Injured 10-Day
+            D15	=   Injured 15-Day
+            D60	=   Injured 60-Day
+            D7	=   Injured 7-Day
+            DEC	=   Deceased
+            DES	=   Designated for Assignment
+            FA	=   Free Agent
+            FME	=   Family Medical Emergency
+            IN	=   Ineligible List
+            MIN	=   Minor League Contract
+            NRI	=   Non-Roster Invitee
+            NYR	=   Not Yet Reported
+            PL	=   Paternity List
+            RES	=   Reserve List (Minors)
+            RET	=   Voluntarily Retired List
+            RL	=   Released
+            RM	=   Reassigned to Minors
+            RST	=   Restricted List
+            SU	=   Suspended # days
+            TI	=   Temporary Inactive List
+            TR	=   Traded
+            WA	=   Waived
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['A','D10','D15','D60','DES','MIN','RST','SUS','BRV','NRI','RM','TR','NYR','CL','IN','TI','WA','DEC','D7','RES','ASG','PL','RET','SU','FME','FA','RL','40M','ADM']
+              config:
+                severity: warn
+
+      - name: status_description
+        description: Human-readable roster status description (maps to status__description).
+
+      - name: note
+        description: >
+          Optional free-text note attached to the roster entry (e.g. injury details,
+          rehab assignment information).
+
+      # ── Team / Season ─────────────────────────────────────────────────────
+      - name: team_id
+        description: MLB team ID this roster entry belongs to (maps to parent_team_id).
+        tests:
+          - not_null
+
+      - name: season
+        description: MLB season year for this roster snapshot.
+        tests:
+          - not_null

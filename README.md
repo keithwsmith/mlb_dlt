@@ -81,10 +81,11 @@
         ├── mlb_latestgame_agent/     # Latest game check agent
         ├── mlb_test_output/          # dbt test reporter
         ├── ETLMonitor/               # ETL health monitor
+        ├── dbt_baseball/             # dbt project (models, tests, macros, seeds)
         ├── .env.template             # Environment variable template (edit → .env)
         ├── .gitignore
         └── README.md
         ```
 
         ---
-        *Generated 2026-06-26*
+        *Generated 2026-06-27*

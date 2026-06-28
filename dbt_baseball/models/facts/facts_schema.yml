@@ -1,0 +1,1407 @@
+version: 2
+
+models:
+
+  # ============================================================
+  # fact_at_bats
+  # ============================================================
+  - name: fact_at_bats
+    description: "One row per at-bat – aggregated pitch-level data with outcome, velocity, batted ball, and timing."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - game_pk
+            - at_bat_index
+    columns:
+      # ── keys & identifiers ──────────────────────────────────
+      - name: load_id
+        description: "Most recent dlt load identifier for this at-bat."
+        tests:
+          - not_null
+      - name: game_pk
+        description: "MLB game identifier."
+        tests:
+          - not_null
+
+      - name: season
+        description: "Season year."
+        tests:
+          - not_null
+
+      - name: at_bat_index
+        description: "At-bat sequence index within the game."
+        tests:
+          - not_null
+
+      - name: pitcher_id
+        description: "MLB player ID of the pitcher."
+        tests:
+          - not_null
+
+      - name: batter_id
+        description: "MLB player ID of the batter."
+        tests:
+          - not_null
+
+      # ── matchup descriptors ─────────────────────────────────
+      - name: pitcher_name
+        description: "Pitcher full name."
+        tests:
+          - not_null
+
+      - name: batter_name
+        description: "Batter full name."
+        tests:
+          - not_null
+
+      - name: pitcher_hand
+        description: "Pitching hand (R/L)."
+        tests:
+          - accepted_values:
+              values: ['R', 'L']
+              config:
+                where: "pitcher_hand is not null"
+
+      - name: batter_side
+        description: "Batting side (R/L/S)."
+        tests:
+          - accepted_values:
+              values: ['R', 'L', 'S']
+              config:
+                where: "batter_side is not null"
+
+      # ── pitch counts ────────────────────────────────────────
+      - name: total_pitches
+        description: "Total pitches in the at-bat."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+
+      - name: strikes_total
+        description: "Total strikes."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: balls_total
+        description: "Total balls."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: fouls
+        description: "Foul balls in the at-bat."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: swinging_strikes
+        description: "Swinging strikes (S, W, T result codes)."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: called_strikes
+        description: "Called strikes."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # ── final state ─────────────────────────────────────────
+      - name: final_balls
+        description: "Ball count at end of at-bat."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 5
+
+      - name: final_strikes
+        description: "Strike count at end of at-bat."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 6
+
+      - name: outs_when_up
+        description: "Outs when batter came to the plate."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 2
+
+      # ── outcome ─────────────────────────────────────────────
+      - name: ended_in_play
+        description: "1 if the at-bat ended with a ball in play."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: ended_in_out
+        description: "1 if the at-bat ended in an out."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      # ── velocity ────────────────────────────────────────────
+      - name: avg_pitch_speed
+        description: "Average pitch release speed in the at-bat (mph)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 30
+              max_value: 110
+              config:
+                where: "avg_pitch_speed is not null"
+
+      - name: max_pitch_speed
+        description: "Maximum pitch release speed in the at-bat (mph)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 20
+              max_value: 110
+              config:
+                where: "max_pitch_speed is not null"
+
+      # ── batted ball ─────────────────────────────────────────
+      - name: exit_velocity
+        description: "Exit velocity of the batted ball (mph). NULL if not put in play."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 150
+              config:
+                where: "exit_velocity is not null"
+
+      - name: launch_angle
+        description: "Launch angle of the batted ball (degrees). NULL if not put in play."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -90
+              max_value: 90
+              config:
+                where: "launch_angle is not null"
+
+      - name: hit_distance
+        description: "Hit distance (feet). NULL if not put in play."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "hit_distance is not null"
+
+      - name: trajectory
+        description: "Batted ball trajectory (values:'ground_ball', 'line_drive', 'fly_ball', 'popup','bunt_grounder','bunt_line_drive','bunt_popup','unknown'). NULL if not put in play."
+        tests:
+          - accepted_values:
+              values: ['ground_ball', 'line_drive', 'fly_ball', 'popup','bunt_grounder','bunt_line_drive','bunt_popup','unknown']
+              config:
+                where: "trajectory is not null"
+
+      # ── timing ──────────────────────────────────────────────
+      - name: ab_start_time
+        description: "Timestamp of the first pitch in the at-bat."
+        # Nullable
+
+      - name: ab_end_time
+        description: "Timestamp of the last pitch in the at-bat."
+        # Nullable
+
+      # ── derived flags ───────────────────────────────────────
+      - name: is_hard_hit
+        description: "1 if exit velocity >= 95 mph."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: is_long_ab
+        description: "1 if total_pitches >= 6."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+  # ============================================================
+  # fact_award_recipient
+  # ============================================================
+  - name: fact_award_recipient
+    description: "One row per player + award + season. Joins to dim_award and dim_award_recipient."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - award_id
+            - season
+            - player_id
+    columns:
+      - name: award_key
+        description: "Surrogate key from dim_award."
+        # Nullable if left join misses
+
+      - name: award_id
+        description: "Natural key for the award."
+        tests:
+          - not_null
+
+      - name: player_id
+        description: "MLB player ID of the recipient."
+        tests:
+          - not_null
+
+      - name: season
+        description: "Season the award was given."
+        tests:
+          - not_null
+
+      - name: award_date
+        description: "Date the award was given."
+        # Nullable
+
+      - name: team_id
+        description: "Team the player was on at time of award."
+        # Nullable
+
+      - name: notes
+        description: "Additional notes about the award."
+        # Nullable
+
+  # ============================================================
+  # fact_batted_balls
+  # ============================================================
+  - name: fact_batted_balls
+    description: "One row per batted-ball event – exit velocity, launch angle, distance, trajectory, and quality-of-contact flags."
+    columns:
+      # ── keys ────────────────────────────────────────────────
+      - name: event_id
+        description: "Unique identifier for the pitch event."
+        tests:
+          - not_null
+          - unique
+
+      - name: game_pk
+        description: "MLB game identifier."
+        tests:
+          - not_null
+
+      - name: season
+        description: "Season year."
+        tests:
+          - not_null
+
+      - name: at_bat_index
+        description: "At-bat index within the game."
+        tests:
+          - not_null
+
+      - name: pitch_number
+        description: "Pitch number within the at-bat."
+        tests:
+          - not_null
+
+      - name: load_id
+        description: "dlt load identifier."
+        tests:
+          - not_null
+      # ── foreign keys ────────────────────────────────────────
+      - name: pitcher_id
+        description: "MLB player ID of the pitcher."
+        tests:
+          - not_null
+
+      - name: batter_id
+        description: "MLB player ID of the batter."
+        tests:
+          - not_null
+
+      - name: pitch_type_code
+        description: "Two-character pitch type code."
+        # Nullable for unknown pitch types
+
+      # ── matchup context ─────────────────────────────────────
+      - name: batter_side
+        description: "Batting side (R/L/S)."
+        tests:
+          - accepted_values:
+              values: ['R', 'L', 'S']
+              config:
+                where: "batter_side is not null"
+
+      - name: pitcher_hand
+        description: "Pitching hand (R/L)."
+        tests:
+          - accepted_values:
+              values: ['R', 'L']
+              config:
+                where: "pitcher_hand is not null"
+
+      - name: balls
+        description: "Ball count when the pitch was thrown."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 6
+
+      - name: strikes
+        description: "Strike count when the pitch was thrown."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 6
+
+      - name: outs_when_up
+        description: "Outs when the batter came to the plate."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 4
+
+      # ── batted ball measures ────────────────────────────────
+      - name: exit_velocity
+        description: "Exit velocity (mph). Always present (filtered in source)."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 150
+
+      - name: launch_angle
+        description: "Launch angle (degrees)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -90
+              max_value: 90
+              config:
+                where: "launch_angle is not null"
+
+      - name: hit_distance
+        description: "Hit distance (feet)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "hit_distance is not null"
+
+      # ── batted ball classification ──────────────────────────
+      - name: trajectory
+        description: "Raw trajectory string (values: ground_ball,line_drive,fly_ball,popup,bunt_grounder,bunt_line_drive,bunt_popup,unknown)."
+        tests:
+          - accepted_values:
+              values: ['ground_ball', 'line_drive', 'fly_ball', 'popup','bunt_grounder','bunt_line_drive','bunt_popup','unknown']
+              config:
+                where: "trajectory is not null"
+
+      - name: hit_hardness
+        description: "Hit hardness classification."
+        # Nullable
+
+      - name: hit_location
+        description: "Hit location zone."
+        # Nullable
+
+      # ── spray chart coordinates ─────────────────────────────
+      - name: hit_coord_x
+        description: "Spray chart X coordinate."
+        # Nullable
+
+      - name: hit_coord_y
+        description: "Spray chart Y coordinate."
+        # Nullable
+
+      # ── pitch that was hit ──────────────────────────────────
+      - name: release_speed
+        description: "Release speed of the pitch that was hit (mph)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 20
+              max_value: 110
+              config:
+                where: "release_speed is not null"
+
+      - name: plate_x
+        description: "Horizontal pitch location at the plate (feet from center)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -12
+              max_value: 35
+              config:
+                where: "plate_x is not null"
+
+      - name: plate_z
+        description: "Vertical pitch location at the plate (feet from ground)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -58
+              max_value: 35
+              config:
+                where: "plate_z is not null"
+
+      - name: pitch_type_description
+        description: "Full pitch type description."
+        # Nullable
+
+      # ── derived quality-of-contact flags ────────────────────
+      - name: is_hard_hit
+        description: "1 if exit velocity >= 95 mph."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: is_barrel
+        description: "1 if exit velocity >= 98 mph and launch angle between 26–30°."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: is_sweet_spot
+        description: "1 if launch angle between 8–32°."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: trajectory_abbrev
+        description: "Abbreviated trajectory (GB, LD, FB, PU, UNK)."
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['GB', 'LD', 'FB', 'PU', 'UNK']
+
+      # ── outcome ─────────────────────────────────────────────
+      - name: is_out
+        description: "1 if the batted ball resulted in an out."
+        # Nullable
+
+  # ============================================================
+  # fact_draft
+  # ============================================================
+  - name: fact_draft
+    description: "One row per draft pick event – pick position, financials, and age at draft."
+    columns:
+      - name: draft_key
+        description: "Foreign key to dim_draft."
+        tests:
+          - not_null
+          - unique
+
+      - name: pick_number
+        description: "Overall pick number."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+
+      - name: round_pick_number
+        description: "Pick number within the round."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+
+      - name: rank
+        description: "Pre-draft rank."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 1
+              config:
+                where: "rank is not null"
+
+      - name: pick_value
+        description: "Slot value of the pick (USD)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "pick_value is not null"
+
+      - name: signing_bonus
+        description: "Signing bonus paid (USD)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "signing_bonus is not null"
+
+      - name: current_age
+        description: "Player age at time of the draft."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 15
+              max_value: 130
+              config:
+                where: "current_age is not null"
+
+  # ============================================================
+  # fact_games
+  # ============================================================
+  - name: fact_games
+    description: "One row per game – dimension keys, scores, derived outcomes, and game metadata."
+    columns:
+      # ── primary key ─────────────────────────────────────────
+      - name: game_pk
+        description: "MLB game identifier (primary key)."
+        tests:
+          - not_null
+          - unique
+
+      # ── dimension keys ──────────────────────────────────────
+      - name: game_date_key
+        description: "Foreign key to dim_date for the game date."
+        # Nullable if date not in dimension
+
+      - name: official_date_key
+        description: "Foreign key to dim_date for the official date."
+        # Nullable
+
+      - name: home_team_key
+        description: "Foreign key to dim_team for the home team."
+        # Nullable if team/season combo not matched
+
+      - name: away_team_key
+        description: "Foreign key to dim_team for the away team."
+        # Nullable if team/season combo not matched
+
+      - name: venue_key
+        description: "Foreign key to dim_venue."
+        # Nullable
+
+      - name: season_key
+        description: "Foreign key to dim_season."
+        # Nullable
+
+      - name: game_type_key
+        description: "Foreign key to dim_game_type."
+        # Nullable
+
+      - name: game_status_key
+        description: "Foreign key to dim_game_status."
+        # Nullable
+
+      # ── game identification ─────────────────────────────────
+      - name: season
+        description: "Season year."
+        tests:
+          - not_null
+
+
+
+      # ── scores ──────────────────────────────────────────────
+      - name: home_team_runs
+        description: "Home team runs scored."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "home_team_runs is not null"
+
+      - name: away_team_runs
+        description: "Away team runs scored."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "away_team_runs is not null"
+
+      - name: home_team_hits
+        description: "Home team hits (placeholder, currently NULL)."
+        # Placeholder – always NULL
+
+      - name: away_team_hits
+        description: "Away team hits (placeholder, currently NULL)."
+        # Placeholder – always NULL
+
+      - name: home_team_errors
+        description: "Home team errors (placeholder, currently NULL)."
+        # Placeholder – always NULL
+
+      - name: away_team_errors
+        description: "Away team errors (placeholder, currently NULL)."
+        # Placeholder – always NULL
+
+      # ── derived outcomes ────────────────────────────────────
+      - name: winning_team_id
+        description: "Team ID of the winner."
+        # Nullable for ties or incomplete games
+
+      - name: losing_team_id
+        description: "Team ID of the loser."
+        # Nullable for ties or incomplete games
+
+      - name: run_diff
+        description: "Home score minus away score."
+        # Nullable when scores unavailable
+
+      - name: is_final
+        description: "1 if the game reached a final state."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      # ── pitcher IDs (placeholders) ──────────────────────────
+      - name: winning_pitcher_id
+        description: "Winning pitcher ID (placeholder, currently NULL)."
+        # Placeholder
+
+      - name: losing_pitcher_id
+        description: "Losing pitcher ID (placeholder, currently NULL)."
+        # Placeholder
+
+      - name: save_pitcher_id
+        description: "Save pitcher ID (placeholder, currently NULL)."
+        # Placeholder
+
+      - name: home_probable_pitcher_id
+        description: "Home probable pitcher ID (placeholder, currently NULL)."
+        # Placeholder
+
+      - name: away_probable_pitcher_id
+        description: "Away probable pitcher ID (placeholder, currently NULL)."
+        # Placeholder
+
+      # ── attendance ──────────────────────────────────────────
+      - name: attendance
+        description: "Game attendance (placeholder, currently NULL)."
+        # Placeholder
+
+      # ── weather ─────────────────────────────────────────────
+      - name: weather_condition
+        description: "Weather condition (placeholder, currently NULL)."
+        # Placeholder
+
+      - name: weather_temp
+        description: "Temperature (placeholder, currently NULL)."
+        # Placeholder
+
+      - name: weather_wind
+        description: "Wind (placeholder, currently NULL)."
+        # Placeholder
+
+      # ── flags ───────────────────────────────────────────────
+      - name: is_no_hitter
+        description: "1 if no-hitter (placeholder, currently 0)."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: is_perfect_game
+        description: "1 if perfect game (placeholder, currently 0)."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: is_shutout
+        description: "1 if either team scored 0 runs."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: is_tie
+        description: "1 if the game ended in a tie."
+        # Nullable
+
+      # ── audit ───────────────────────────────────────────────
+      - name: load_id
+        description: "dlt load identifier."
+        tests:
+          - not_null
+      - name: _dlt_id
+        description: "dlt row identifier."
+        tests:
+          - not_null
+
+      - name: created_at
+        description: "Row creation timestamp."
+        tests:
+          - not_null
+
+      - name: updated_at
+        description: "Row update timestamp."
+        tests:
+          - not_null
+
+  # ============================================================
+  # fact_pitches
+  # ============================================================
+  - name: fact_pitches
+    description: "One row per pitch – velocity, location, movement, spin, release point, and result flags."
+    columns:
+      # ── keys ────────────────────────────────────────────────
+      - name: load_id
+        description: "dlt load identifier (unique key for incremental)."
+        tests:
+          - not_null
+      - name: event_id
+        description: "Unique identifier for the pitch event."
+        tests:
+          - not_null
+
+      - name: game_pk
+        description: "MLB game identifier."
+        tests:
+          - not_null
+
+      - name: season
+        description: "Season year."
+        tests:
+          - not_null
+
+      - name: at_bat_index
+        description: "At-bat index within the game."
+        tests:
+          - not_null
+
+      - name: pitch_number
+        description: "Pitch number within the at-bat."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+
+      - name: play_id
+        description: "Play identifier."
+        # Nullable
+
+      # ── foreign keys ────────────────────────────────────────
+      - name: pitcher_id
+        description: "MLB player ID of the pitcher."
+        tests:
+          - not_null
+
+      - name: batter_id
+        description: "MLB player ID of the batter."
+        tests:
+          - not_null
+
+      - name: pitch_type_code
+        description: "Two-character pitch type code."
+        # Nullable for unknown pitch types
+
+      - name: pitch_result_code
+        description: "Pitch result code (B, S, X, etc.)."
+        tests:
+          - not_null
+
+      - name: zone
+        description: "Strike zone number (1-9 in zone, 11-14 out of zone)."
+        tests:
+          - accepted_values:
+              values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14]
+              config:
+                where: "zone is not null"
+
+      # ── matchup context ─────────────────────────────────────
+      - name: batter_side
+        description: "Batting side (R/L/S)."
+        tests:
+          - accepted_values:
+              values: ['R', 'L', 'S']
+              config:
+                where: "batter_side is not null"
+
+      - name: pitcher_hand
+        description: "Pitching hand (R/L)."
+        tests:
+          - accepted_values:
+              values: ['R', 'L']
+              config:
+                where: "pitcher_hand is not null"
+
+      - name: balls
+        description: "Ball count before this pitch."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 5
+
+      - name: strikes
+        description: "Strike count before this pitch."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 6
+
+      - name: outs_when_up
+        description: "Outs when batter came to the plate."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 2
+
+      # ── timestamps ──────────────────────────────────────────
+      - name: start_time
+        description: "Pitch start timestamp."
+        # Nullable
+
+      - name: end_time
+        description: "Pitch end timestamp."
+        # Nullable
+
+      # ── velocity ────────────────────────────────────────────
+      - name: release_speed
+        description: "Release speed (mph)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 20
+              max_value: 110
+              config:
+                where: "release_speed is not null"
+
+      - name: plate_speed
+        description: "Speed at the plate (mph)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 110
+              config:
+                where: "plate_speed is not null"
+
+      - name: plate_time
+        description: "Time for pitch to reach the plate (seconds)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 3
+              config:
+                where: "plate_time is not null"
+
+      - name: extension
+        description: "Pitcher extension toward home plate (feet)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -15
+              max_value: 32
+              config:
+                where: "extension is not null"
+
+      # ── location at plate ───────────────────────────────────
+      - name: plate_x
+        description: "Horizontal pitch location at the plate (feet from center)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -58
+              max_value: 35
+              config:
+                where: "plate_x is not null"
+
+      - name: plate_z
+        description: "Vertical pitch location at the plate (feet from ground)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -58
+              max_value: 35
+              config:
+                where: "plate_z is not null"
+
+      # ── strike zone bounds ──────────────────────────────────
+      - name: sz_top
+        description: "Top of the batter's strike zone (feet)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -2
+              max_value: 207
+              config:
+                where: "sz_top is not null"
+
+      - name: sz_bot
+        description: "Bottom of the batter's strike zone (feet)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -9
+              max_value: 143
+              config:
+                where: "sz_bot is not null"
+
+      # ── movement ────────────────────────────────────────────
+      - name: pfx_x
+        description: "Horizontal movement (inches)."
+        # Signed value
+
+      - name: pfx_z
+        description: "Vertical movement (inches)."
+        # Signed value
+
+      - name: break_angle
+        description: "Break angle (degrees)."
+        # Nullable
+
+      - name: break_length
+        description: "Break length (inches)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "break_length is not null"
+
+      - name: break_vertical
+        description: "Vertical break (inches)."
+        # Signed value
+
+      - name: break_vertical_induced
+        description: "Induced vertical break (inches)."
+        # Signed value
+
+      - name: break_horizontal
+        description: "Horizontal break (inches)."
+        # Signed value
+
+      # ── spin ────────────────────────────────────────────────
+      - name: spin_rate
+        description: "Spin rate (rpm)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 7300
+              config:
+                where: "spin_rate is not null"
+
+      - name: spin_direction
+        description: "Spin direction (degrees)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 360
+              config:
+                where: "spin_direction is not null"
+
+      # ── release point ───────────────────────────────────────
+      - name: release_pos_x
+        description: "Horizontal release position (feet from center)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -17
+              max_value: 17
+              config:
+                where: "release_pos_x is not null"
+
+      - name: release_pos_y
+        description: "Distance from home plate at release (feet)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 45
+              max_value: 62
+              config:
+                where: "release_pos_y is not null"
+
+      - name: release_pos_z
+        description: "Vertical release position (feet from ground)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -2
+              max_value: 13
+              config:
+                where: "release_pos_z is not null"
+
+      # ── classification confidence ───────────────────────────
+      - name: pitch_type_confidence
+        description: "Model confidence in pitch type classification (0–1)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 2
+              config:
+                where: "pitch_type_confidence is not null"
+
+      # ── result flags ────────────────────────────────────────
+      - name: is_strike
+        description: "1 if the pitch was a strike."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+
+      - name: is_ball
+        description: "1 if the pitch was a ball."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+
+      - name: is_in_play
+        description: "1 if the pitch was put in play."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+
+      - name: is_out
+        description: "1 if the play resulted in an out."
+        # Nullable
+
+      - name: is_runner_going
+        description: "1 if a runner was going on the pitch."
+        # Nullable
+
+      # ── strike zone detailed info ───────────────────────────
+      - name: sz_info_is_strike
+        description: "Strike zone model strike classification."
+        # Nullable
+
+      - name: sz_info_edge_distance
+        description: "Distance from edge of strike zone."
+        # Nullable
+
+  # ============================================================
+  # fact_player_stats
+  # ============================================================
+  - name: fact_player_stats
+    description: "Season-level player stats – batting, pitching, and fielding from the MLB stats API."
+    columns:
+      # ── dimension keys ──────────────────────────────────────
+      - name: player_key
+        description: "Player ID used as foreign key to dim_player."
+        tests:
+          - not_null
+
+      - name: team_key
+        description: "Team ID used as foreign key to dim_team."
+        # Nullable
+
+      - name: season_key
+        description: "Season used as foreign key to dim_season."
+        tests:
+          - not_null
+          
+      
+
+      # ── common fields ──────────────────────────────────────
+      - name: season
+        description: "Season year."
+        tests:
+          - not_null
+
+      - name: age
+        description: "Player age during the season."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 15
+              max_value: 60
+              config:
+                where: "age is not null"
+
+      - name: games_played
+        description: "Games played."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "games_played is not null"
+
+      - name: games_started
+        description: "Games started."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "games_started is not null"
+
+      # ── batting stats ───────────────────────────────────────
+      - name: at_bats
+        description: "At-bats."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "at_bats is not null"
+
+      - name: runs
+        description: "Runs scored."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "runs is not null"
+
+      - name: hits
+        description: "Hits."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "hits is not null"
+
+      - name: doubles
+        description: "Doubles."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "doubles is not null"
+
+      - name: triples
+        description: "Triples."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "triples is not null"
+
+      - name: home_runs
+        description: "Home runs."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "home_runs is not null"
+
+      - name: rbi
+        description: "Runs batted in."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "rbi is not null"
+
+      - name: stolen_bases
+        description: "Stolen bases."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "stolen_bases is not null"
+
+      - name: caught_stealing
+        description: "Caught stealing."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "caught_stealing is not null"
+
+      - name: walks
+        description: "Walks (base on balls)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "walks is not null"
+
+      - name: strikeouts
+        description: "Strikeouts (batting)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "strikeouts is not null"
+
+      - name: batting_average
+        description: "Batting average."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "batting_average is not null"
+
+      - name: on_base_percentage
+        description: "On-base percentage."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "on_base_percentage is not null"
+
+      - name: slugging_percentage
+        description: "Slugging percentage."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 5
+              config:
+                where: "slugging_percentage is not null"
+
+      - name: ops
+        description: "On-base plus slugging."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 6
+              config:
+                where: "ops is not null"
+
+      # ── pitching stats ──────────────────────────────────────
+      - name: wins
+        description: "Pitcher wins."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "wins is not null"
+
+      - name: losses
+        description: "Pitcher losses."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "losses is not null"
+
+     
+
+      - name: games_finished
+        description: "Games finished."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "games_finished is not null"
+
+      - name: saves
+        description: "Saves."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "saves is not null"
+
+      - name: save_opportunities
+        description: "Save opportunities."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "save_opportunities is not null"
+
+      - name: holds
+        description: "Holds."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "holds is not null"
+
+      - name: innings_pitched
+        description: "Innings pitched."
+        # Nullable – string format like '123.1'
+
+     
+
+      - name: hits_allowed
+        description: "Hits allowed (placeholder, currently NULL)."
+        # Placeholder
+
+      - name: runs_allowed
+        description: "Runs allowed (placeholder, currently NULL)."
+        # Placeholder
+
+      - name: earned_runs
+        description: "Earned runs."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "earned_runs is not null"
+
+      - name: home_runs_allowed
+        description: "Home runs allowed (placeholder, currently NULL)."
+        # Placeholder
+
+      - name: walks_allowed
+        description: "Walks allowed (placeholder, currently NULL)."
+        # Placeholder
+
+      - name: strikeouts_pitched
+        description: "Strikeouts as a pitcher."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "strikeouts_pitched is not null"
+
+     
+
+      # ── fielding stats ──────────────────────────────────────
+      - name: position_code
+        description: "Position code for these stats."
+        # Nullable
+
+      - name: games_at_position
+        description: "Games played at this position."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "games_at_position is not null"
+
+      - name: putouts
+        description: "Putouts."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "putouts is not null"
+
+      - name: assists
+        description: "Assists."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "assists is not null"
+
+      - name: errors
+        description: "Errors."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "errors is not null"
+
+      - name: double_plays
+        description: "Double plays turned."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "double_plays is not null"
+
+     
+
+      # ── advanced metrics ────────────────────────────────────
+      - name: war
+        description: "Wins above replacement (placeholder, currently NULL)."
+        # Placeholder
+
+      # ── audit ───────────────────────────────────────────────
+      - name: _dlt_load_id
+        description: "dlt load identifier."
+        tests:
+          - not_null
+      - name: _dlt_id
+        description: "dlt row identifier (unique key)."
+        tests:
+          - not_null
+          - unique
+
+      - name: created_at
+        description: "Row creation timestamp."
+        tests:
+          - not_null
+
+      - name: updated_at
+        description: "Row update timestamp."
+        tests:
+          - not_null

@@ -51,4 +51,4 @@ Key variables for this project:
 [mlb_dlt](https://github.com/keithwsmith/mlb_dlt.git) — MLB Stats API → SQL Server data warehouse
 
 ---
-*Generated 2026-06-26*
+*Generated 2026-06-27*

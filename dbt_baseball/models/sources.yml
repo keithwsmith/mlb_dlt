@@ -1,0 +1,1112 @@
+version: 2
+
+# =============================================================================
+# RAW SOURCE DEFINITIONS — dw schema
+# =============================================================================
+# These are the raw tables loaded by the dlt pipeline into the dw schema.
+# Reference them in models with {{ source('dw', 'table_name') }}.
+# Run tests with: dbt test --select source:dw
+# Check freshness with: dbt source freshness
+# =============================================================================
+
+sources:
+  - name: dw
+    description: >
+      Raw data warehouse tables loaded from the MLB Stats API via dlt pipelines.
+      All tables are in the dlt database, dw schema.
+    database: dlt
+    schema: dw
+    loader: dlt
+
+    tables:
+
+      # ────────────────────────────────────────────────────────────
+      # PLAY EVENTS
+      # ────────────────────────────────────────────────────────────
+      - name: play_events
+        description: >
+          Pitch-level play-by-play events for every completed MLB game.
+          One row per pitch; non-pitch events are excluded at load time.
+          Loaded incrementally — games already present are skipped.
+        columns:
+          - name: _dlt_id
+            description: dlt surrogate row key — unique per row.
+            data_tests:
+              - not_null
+              - unique
+          - name: _dlt_load_id
+            description: dlt internal load batch identifier.
+            data_tests:
+              - not_null
+          - name: pitch_number
+            description: Sequential pitch number within the game (NOT NULL per DDL).
+            data_tests:
+              - not_null
+          - name: game_pk
+            description: MLB unique game identifier. FK to dw.games.
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('dw', 'games')
+                    field: game_pk
+          - name: at_bat_index
+            description: Sequential at-bat number within the game, 0-based (NOT NULL per DDL).
+            data_tests:
+              - not_null
+          - name: season
+            description: Season year the game was played.
+          - name: index
+            description: Pitch sequence index within the at-bat, 0-based.
+          - name: play_id
+            description: UUID assigned by the MLB API to uniquely identify this pitch event.
+          - name: start_time
+            description: Wall-clock timestamp when the pitch was thrown (datetimeoffset).
+          - name: end_time
+            description: Wall-clock timestamp when the pitch result was recorded (datetimeoffset).
+          - name: is_pitch
+            description: Boolean flag — always TRUE in this table.
+          - name: is_in_play
+            description: TRUE when the batter put the ball in play.
+          - name: type
+            description: High-level event type code (e.g. pitch, action, stepoff).
+          - name: pfx_id
+            description: Pitch f/x tracking system identifier. NULL for games without Statcast.
+          - name: details__call__code
+            description: Umpire call code for the pitch result (e.g. C = called strike, B = ball).
+          - name: details__call__description
+            description: Human-readable label for the umpire call.
+          - name: details__description
+            description: Full description of the pitch event outcome.
+          - name: details__code
+            description: Single-character MLB result code (e.g. C, B, X, S, F).
+          - name: details__is_strike
+            description: TRUE if the pitch was ruled a strike.
+          - name: details__is_ball
+            description: TRUE if the pitch was ruled a ball.
+          - name: details__is_out
+            description: TRUE if the pitch resulted in an out.
+          - name: details__is_in_play
+            description: API-level in-play flag (mirrors the derived is_in_play column).
+          - name: details__has_review
+            description: TRUE if this pitch event had a replay review initiated.
+          - name: details__runner_going
+            description: TRUE if a runner was in motion when the pitch was thrown.
+          - name: details__type__code
+            description: Pitch type code as classified by MLB Statcast (e.g. FF, SL, CH). FK to dw.pitch_type.
+          - name: details__type__description
+            description: >
+              Full pitch type name (e.g. "Four-Seam Fastball").
+          - name: batter_id
+            description: MLB player ID of the batter.
+            data_tests:
+              - not_null
+          - name: batter_name
+            description: Full name of the batter.
+          - name: batter_side
+            description: Side of the plate the batter used — L, R, or S (switch).
+            data_tests:
+              - accepted_values:
+                  values: ['L', 'R', 'S']
+          - name: pitcher_id
+            description: MLB player ID of the pitcher.
+            data_tests:
+              - not_null
+          - name: pitcher_name
+            description: Full name of the pitcher.
+          - name: pitcher_hand
+            description: Pitching arm — L (left) or R (right).
+            data_tests:
+              - accepted_values:
+                  values: ['L', 'R']
+          - name: pitch_data__start_speed
+            description: Pitch velocity out of the hand in mph.
+          - name: pitch_data__end_speed
+            description: Pitch velocity as it crossed the plate in mph.
+          - name: pitch_data__zone
+            description: Strike zone region (1–9 = in zone, 11–14 = chase zones). FK to dw.Zones.
+          - name: pitch_data__extension
+            description: Release extension — distance in front of the rubber the ball was released (feet).
+          - name: pitch_data__plate_time
+            description: Time in seconds for the pitch to travel from release to the plate.
+          - name: pitch_data__type_confidence
+            description: Confidence score (0–1) for the pitch-type classification.
+          - name: pitch_data__strike_zone_top
+            description: Top of the batter-specific strike zone (feet from ground).
+          - name: pitch_data__strike_zone_bottom
+            description: Bottom of the batter-specific strike zone (feet from ground).
+          - name: pitch_data__coordinates__p_x
+            description: Horizontal pitch location at the plate (feet, catcher perspective).
+          - name: pitch_data__coordinates__p_z
+            description: Vertical pitch location at the plate (feet from ground).
+          - name: pitch_data__coordinates__x0
+            description: Pitch X position at 50 feet from home plate (feet).
+          - name: pitch_data__coordinates__y0
+            description: Pitch Y position at 50 feet from home plate (feet); typically ~55.
+          - name: pitch_data__coordinates__z0
+            description: Pitch Z (height) position at 50 feet from home plate (feet).
+          - name: pitch_data__coordinates__v_x0
+            description: Pitch velocity in the X direction at release (ft/s).
+          - name: pitch_data__coordinates__v_y0
+            description: Pitch velocity in the Y direction at release (ft/s).
+          - name: pitch_data__coordinates__v_z0
+            description: Pitch velocity in the Z direction at release (ft/s).
+          - name: pitch_data__coordinates__a_x
+            description: Pitch acceleration in the X direction (ft/s²).
+          - name: pitch_data__coordinates__a_y
+            description: Pitch acceleration in the Y direction (ft/s²).
+          - name: pitch_data__coordinates__a_z
+            description: Pitch acceleration in the Z direction (ft/s²).
+          - name: pitch_data__coordinates__pfx_x
+            description: Horizontal movement relative to a spin-free pitch (inches).
+          - name: pitch_data__coordinates__pfx_z
+            description: Vertical movement relative to a spin-free pitch (inches). Positive = rise.
+          - name: pitch_data__breaks__break_angle
+            description: Angle of the pitch break in degrees.
+          - name: pitch_data__breaks__break_length
+            description: Total distance the pitch deviated from a straight-line path (inches).
+          - name: pitch_data__breaks__break_vertical
+            description: Total vertical break of the pitch (inches, gravity included).
+          - name: pitch_data__breaks__break_vertical_induced
+            description: Vertical break due to spin only, excluding gravity (inches).
+          - name: pitch_data__breaks__break_horizontal
+            description: Total horizontal break of the pitch (inches).
+          - name: pitch_data__breaks__spin_rate
+            description: Spin rate of the pitch in RPM.
+          - name: pitch_data__breaks__spin_direction
+            description: Direction of the pitch spin (degrees, 0–360).
+          - name: hit_data__launch_speed
+            description: Exit velocity of the batted ball in mph. NULL when is_in_play = FALSE.
+          - name: hit_data__launch_angle
+            description: Launch angle of the batted ball in degrees. NULL when is_in_play = FALSE.
+          - name: hit_data__total_distance
+            description: Projected distance of the batted ball in feet. NULL when is_in_play = FALSE.
+          - name: hit_data__trajectory
+            description: Batted ball trajectory (e.g. ground_ball, fly_ball, line_drive, popup).
+          - name: hit_data__hardness
+            description: Batted ball hardness category (soft, medium, hard).
+          - name: hit_data__location
+            description: Fielding zone number where the batted ball was fielded.
+          - name: hit_data__coordinates__coord_x
+            description: Spray chart X coordinate of the batted ball landing position.
+          - name: hit_data__coordinates__coord_y
+            description: Spray chart Y coordinate of the batted ball landing position.
+          - name: review_details__is_overturned
+            description: TRUE if a replay review overturned the original call.
+          - name: review_details__review_type
+            description: Category of the replay review (e.g. hit-by-pitch, fair-foul, home run).
+          - name: review_details__challenge_team_id
+            description: MLB team ID of the team that initiated the challenge.
+          - name: review_details__player__id
+            description: MLB player ID associated with the review.
+          - name: review_details__player__full_name
+            description: Full name of the player associated with the review.
+
+      # ────────────────────────────────────────────────────────────
+      # GAMES
+      # ────────────────────────────────────────────────────────────
+      - name: games
+        description: >
+          Game-level schedule and result records for all completed MLB games.
+          game_pk is the clustered PRIMARY KEY per DDL. Only Final games are loaded.
+          Merged on game_pk — re-running updates existing records.
+        columns:
+          - name: game_pk
+            description: MLB primary key for the game — clustered PK per DDL (NOT NULL, unique).
+            data_tests:
+              - not_null
+              - unique
+          - name: _dlt_id
+            description: dlt surrogate row key (NOT NULL per DDL).
+            data_tests:
+              - not_null
+              - unique
+          - name: _dlt_load_id
+            description: dlt internal load batch identifier (NOT NULL per DDL).
+            data_tests:
+              - not_null
+          - name: game_type
+            description: >
+              Game type code: R = Regular Season, F = Wild Card, D = Division Series,
+              L = League Championship, W = World Series, S = Spring Training,
+              E = Exhibition, A = All-Star.
+            data_tests:
+              - accepted_values:
+                  values: ['R', 'F', 'D', 'L', 'W', 'S', 'E', 'A']
+          - name: season
+            description: Season year the game belongs to (nvarchar).
+          - name: game_date
+            description: Timestamp of the game (datetimeoffset).
+          - name: official_date
+            description: Official MLB calendar date of the game (nvarchar YYYY-MM-DD).
+          - name: status__coded_game_state
+            description: Single-character coded game state (NOT NULL per DDL).
+            data_tests:
+              - not_null
+          - name: status__abstract_game_state
+            description: >
+              High-level game state — always "Final" for records in this table.
+          - name: status__detailed_state
+            description: Detailed game outcome (e.g. Final, Completed Early, Cancelled, Postponed).
+          - name: status__status_code
+            description: Internal MLB status code.
+          - name: status__abstract_game_code
+            description: Single-char abstract game code (e.g. F = Final, L = Live).
+          - name: status__reason
+            description: Reason for cancellation or postponement. NULL for normally completed games.
+          - name: teams__home__team__id
+            description: MLB team ID of the home team. FK to dw.teams.
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('dw', 'teams')
+                    field: id
+          - name: teams__home__team__name
+            description: Full name of the home team.
+          - name: teams__home__score
+            description: Final score of the home team.
+          - name: teams__home__is_winner
+            description: TRUE if the home team won.
+          - name: teams__home__league_record__wins
+            description: Home team win total at time of game.
+          - name: teams__home__league_record__losses
+            description: Home team loss total at time of game.
+          - name: teams__home__league_record__pct
+            description: Home team winning percentage at time of game (nvarchar).
+          - name: teams__away__team__id
+            description: MLB team ID of the away team. FK to dw.teams.
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('dw', 'teams')
+                    field: id
+          - name: teams__away__team__name
+            description: Full name of the away team.
+          - name: teams__away__score
+            description: Final score of the away team.
+          - name: teams__away__is_winner
+            description: TRUE if the away team won.
+          - name: teams__away__league_record__wins
+            description: Away team win total at time of game.
+          - name: teams__away__league_record__losses
+            description: Away team loss total at time of game.
+          - name: teams__away__league_record__pct
+            description: Away team winning percentage at time of game (nvarchar).
+          - name: venue__id
+            description: MLB venue ID of the stadium. FK to dw.venues.
+          - name: venue__name
+            description: Name of the stadium.
+          - name: day_night
+            description: D = day game, N = night game.
+            data_tests:
+              - accepted_values:
+                  values: ['day', 'night']
+          - name: double_header
+            description: N = not a doubleheader, Y = traditional, S = split.
+            data_tests:
+              - accepted_values:
+                  values: ['N', 'Y', 'S']
+          - name: game_number
+            description: Game number within a doubleheader (1 or 2).
+          - name: scheduled_innings
+            description: Number of scheduled innings (typically 9; 7 for doubleheader games).
+          - name: games_in_series
+            description: Total number of games in this series.
+          - name: series_game_number
+            description: This game's position within its series.
+          - name: series_description
+            description: >
+              Human-readable series label (e.g. "Regular Season", "World Series").
+          - name: is_tie
+            description: TRUE if the game ended in a tie.
+
+      # ────────────────────────────────────────────────────────────
+      # GAME DETAILS
+      # ────────────────────────────────────────────────────────────
+      - name: game_details
+        description: >
+          Supplemental game-level statistics fetched from the v1.1 live feed,
+          boxscore, and linescore endpoints. One row per completed game, merged
+          on game_pk. Weather columns are NULL for dome stadiums and pre-Statcast games.
+        columns:
+          - name: game_pk
+            description: Primary key — MLB unique game identifier (NOT NULL per DDL). FK to dw.games.
+            data_tests:
+              - not_null
+              - unique
+              - relationships:
+                  arguments:
+                    to: source('dw', 'games')
+                    field: game_pk
+          - name: _dlt_id
+            description: dlt surrogate row key (NOT NULL per DDL).
+            data_tests:
+              - not_null
+              - unique
+          - name: _dlt_load_id
+            description: dlt internal load batch identifier (NOT NULL per DDL).
+            data_tests:
+              - not_null
+          - name: weather_condition
+            description: Sky/weather at first pitch (e.g. Sunny, Cloudy). NULL for domes or older games.
+          - name: weather_temp
+            description: Temperature at first pitch in °F (nvarchar). NULL for domes or older games.
+          - name: weather_wind
+            description: Wind description at first pitch (nvarchar). NULL for domes.
+          - name: attendance
+            description: Paid attendance count (bigint). Sourced from live feed with boxscore fallback.
+          - name: first_pitch
+            description: Timestamp of the first pitch (datetimeoffset). Boxscore fallback applied.
+          - name: game_duration_minutes
+            description: >
+              Total game duration in minutes. Derived from boxscore "T" field when NULL.
+          - name: winning_pitcher_id
+            description: MLB player ID of the winning pitcher. NULL for tie or suspended games.
+          - name: winning_pitcher_name
+            description: Full name of the winning pitcher.
+          - name: losing_pitcher_id
+            description: MLB player ID of the losing pitcher. NULL for tie or suspended games.
+          - name: losing_pitcher_name
+            description: Full name of the losing pitcher.
+          - name: save_pitcher_id
+            description: MLB player ID of the save pitcher. NULL when no save was recorded.
+          - name: save_pitcher_name
+            description: Full name of the save pitcher.
+          - name: home_runs
+            description: Runs scored by the home team.
+          - name: home_hits
+            description: Hits recorded by home team batters.
+          - name: home_doubles
+            description: Doubles hit by the home team.
+          - name: home_triples
+            description: Triples hit by the home team.
+          - name: home_home_runs
+            description: Home runs hit by the home team.
+          - name: home_rbi
+            description: RBI total for the home team.
+          - name: home_stolen_bases
+            description: Stolen bases recorded by the home team.
+          - name: home_strikeouts
+            description: Strikeouts recorded by home team batters.
+          - name: home_walks
+            description: Walks drawn by the home team.
+          - name: home_left_on_base
+            description: Home team runners left on base.
+          - name: home_pitching_strikeouts
+            description: Strikeouts recorded by home team pitchers.
+          - name: home_pitching_walks
+            description: Walks issued by home team pitchers.
+          - name: home_pitching_hits_allowed
+            description: Hits allowed by home team pitchers.
+          - name: home_pitching_runs_allowed
+            description: Total runs allowed by home team pitchers.
+          - name: home_pitching_earned_runs
+            description: Earned runs allowed by home team pitchers.
+          - name: home_pitching_home_runs_allowed
+            description: Home runs allowed by home team pitchers.
+          - name: away_runs
+            description: Runs scored by the away team.
+          - name: away_hits
+            description: Hits recorded by away team batters.
+          - name: away_doubles
+            description: Doubles hit by the away team.
+          - name: away_triples
+            description: Triples hit by the away team.
+          - name: away_home_runs
+            description: Home runs hit by the away team.
+          - name: away_rbi
+            description: RBI total for the away team.
+          - name: away_stolen_bases
+            description: Stolen bases recorded by the away team.
+          - name: away_strikeouts
+            description: Strikeouts recorded by away team batters.
+          - name: away_walks
+            description: Walks drawn by the away team.
+          - name: away_left_on_base
+            description: Away team runners left on base.
+          - name: away_pitching_strikeouts
+            description: Strikeouts recorded by away team pitchers.
+          - name: away_pitching_walks
+            description: Walks issued by away team pitchers.
+          - name: away_pitching_hits_allowed
+            description: Hits allowed by away team pitchers.
+          - name: away_pitching_runs_allowed
+            description: Total runs allowed by away team pitchers.
+          - name: away_pitching_earned_runs
+            description: Earned runs allowed by away team pitchers.
+          - name: away_pitching_home_runs_allowed
+            description: Home runs allowed by away team pitchers.
+
+      # ────────────────────────────────────────────────────────────
+      # PLAYER TRANSACTIONS
+      # ────────────────────────────────────────────────────────────
+      - name: player_transactions
+        description: >
+          All MLB roster transactions since 1960 including trades, DFA actions,
+          option assignments, free-agent signings, and injuries.
+          Loaded incrementally — only dates after MAX(date) are fetched.
+        columns:
+          - name: _dlt_id
+            description: dlt surrogate row key (NOT NULL per DDL).
+            data_tests:
+              - not_null
+              - unique
+          - name: _dlt_load_id
+            description: dlt internal load batch identifier (NOT NULL per DDL).
+            data_tests:
+              - not_null
+          - name: transaction_id
+            description: MLB API primary key for the transaction. DDL allows NULL.
+          - name: date
+            description: Date the transaction was announced (YYYY-MM-DD string).
+          - name: effective_date
+            description: Date the transaction took effect.
+          - name: resolution_date
+            description: Date the transaction was fully resolved.
+          - name: type_code
+            description: Short code classifying the transaction type (e.g. TR, DFA, RL).
+          - name: type_desc
+            description: Human-readable description of the transaction type.
+          - name: description
+            description: Full free-text description of the transaction as published by MLB.
+          - name: transaction_category
+            description: >
+              player when a player_id is present, team for team-level transactions.
+            data_tests:
+              - accepted_values:
+                  values: ['player', 'team']
+          - name: has_player
+            description: Boolean TRUE when the transaction is associated with a specific player.
+          - name: player_id
+            description: MLB player ID of the player involved. NULL for team-level transactions.
+          - name: player_name
+            description: Full name of the player involved.
+          - name: from_team_id
+            description: MLB team ID of the originating team. NULL for signings.
+          - name: from_team_name
+            description: Name of the originating team.
+          - name: to_team_id
+            description: MLB team ID of the receiving team. NULL for releases/retirements.
+          - name: to_team_name
+            description: Name of the receiving team.
+
+      # ────────────────────────────────────────────────────────────
+      # ROSTERS
+      # ────────────────────────────────────────────────────────────
+      - name: rosters
+        description: >
+          40-man roster membership snapshots for every MLB team by season.
+          One row per player-team-season-status combination.
+          All key columns (person__id, season, status__code) are DDL-nullable.
+        columns:
+          - name: _dlt_id
+            description: dlt surrogate row key (NOT NULL per DDL).
+            data_tests:
+              - not_null
+              - unique
+          - name: _dlt_load_id
+            description: dlt internal load batch identifier (NOT NULL per DDL).
+            data_tests:
+              - not_null
+          - name: person__id
+            description: MLB player ID. FK to dw.mlbplayers. DDL allows NULL.
+          - name: person__full_name
+            description: Full name of the player as registered on the 40-man roster.
+          - name: jersey_number
+            description: Player jersey number (nvarchar).
+          - name: position__code
+            description: Defensive position code (e.g. 1 = Pitcher, 2 = Catcher).
+          - name: position__name
+            description: Full position name (e.g. Pitcher, First Baseman).
+          - name: position__type
+            description: Broad position category (Pitcher, Catcher, Infielder, Outfielder).
+          - name: position__abbreviation
+            description: Standard position abbreviation (e.g. P, C, 1B, SS, OF).
+          - name: status__code
+            description: Roster status code (e.g. A = Active, DL = Injured List, O = Optioned).
+          - name: status__description
+            description: Human-readable roster status label.
+          - name: season
+            description: Season year of the roster snapshot. DDL allows NULL.
+          - name: parent_team_id
+            description: MLB team ID the roster belongs to. FK to dw.teams. DDL allows NULL.
+          - name: note
+            description: Optional free-text note about the roster entry.
+
+      # ────────────────────────────────────────────────────────────
+      # UMPIRES
+      # ────────────────────────────────────────────────────────────
+      - name: umpires
+        description: >
+          Umpire assignments for regular-season MLB games. One row per
+          game/official-type combination. Composite PK is (game_pk, official_type).
+          Loaded only for games in dw.games missing umpire records.
+        columns:
+          - name: _dlt_id
+            description: dlt surrogate row key (NOT NULL per DDL).
+            data_tests:
+              - not_null
+              - unique
+          - name: _dlt_load_id
+            description: dlt internal load batch identifier (NOT NULL per DDL).
+            data_tests:
+              - not_null
+          - name: game_pk
+            description: MLB unique game identifier (NOT NULL per DDL). FK to dw.games.
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('dw', 'games')
+                    field: game_pk
+          - name: official_type
+            description: Position worked — e.g. Home Plate, First Base (NOT NULL per DDL).
+            data_tests:
+              - not_null
+              - accepted_values:
+                  values: ['Home Plate', 'First Base', 'Second Base', 'Third Base',
+                           'Left Field', 'Right Field']
+          - name: official_id
+            description: MLB umpire personnel ID. DDL allows NULL.
+          - name: full_name
+            description: Full name of the umpire. DDL allows NULL.
+
+      # ────────────────────────────────────────────────────────────
+      # MLB PLAYERS
+      # ────────────────────────────────────────────────────────────
+      - name: mlbplayers
+        description: >
+          Master player registry built from 40-man roster calls across all seasons
+          (1960–present). Fully replaced on each load. All columns are DDL-nullable
+          including id. One row per player per load.
+        columns:
+          - name: _dlt_id
+            description: dlt surrogate row key (NOT NULL per DDL).
+            data_tests:
+              - not_null
+              - unique
+          - name: _dlt_load_id
+            description: dlt internal load batch identifier (NOT NULL per DDL).
+            data_tests:
+              - not_null
+          - name: id
+            description: MLB player ID — natural identifier. DDL allows NULL.
+          - name: full_name
+            description: Player's full legal name as registered with MLB.
+          - name: first_name
+            description: Player's first name.
+          - name: last_name
+            description: Player's last name.
+          - name: birth_date
+            description: Player's date of birth (YYYY-MM-DD string).
+          - name: birth_city
+            description: City where the player was born.
+          - name: birth_country
+            description: Country where the player was born.
+          - name: birth_state_province
+            description: State or province where the player was born.
+          - name: death_date
+            description: Date of death (YYYY-MM-DD string). NULL for living players.
+          - name: death_city
+            description: City of death. NULL for living players.
+          - name: death_country
+            description: Country of death. NULL for living players.
+          - name: height
+            description: >
+              Player height in feet-inches format (e.g. "6-2"), stored as nvarchar.
+          - name: weight
+            description: Player weight in pounds (bigint).
+          - name: active
+            description: TRUE if the player is currently on an active MLB roster.
+          - name: primary_position__code
+            description: Primary defensive position code (e.g. 1 = Pitcher, 2 = Catcher).
+          - name: primary_position__name
+            description: Primary defensive position name (e.g. Pitcher, Shortstop).
+          - name: primary_position__type
+            description: Broad position category (Pitcher, Catcher, Infielder, Outfielder).
+          - name: primary_position__abbreviation
+            description: Standard abbreviation for the primary position (e.g. P, SS, OF).
+          - name: bat_side__code
+            description: Batting side — L, R, or S (switch hitter).
+            data_tests:
+              - accepted_values:
+                  values: ['L', 'R', 'S']
+          - name: bat_side__description
+            description: Human-readable batting side label.
+          - name: pitch_hand__code
+            description: Pitching hand — L or R. NULL for non-pitchers.
+            data_tests:
+              - accepted_values:
+                  values: ['L', 'R', 'S',null]
+          - name: pitch_hand__description
+            description: Human-readable pitching hand label.
+          - name: mlb_debut_date
+            description: Date of the player's first MLB appearance (YYYY-MM-DD string).
+          - name: last_played_date
+            description: Date of the player's last MLB game. NULL for active players.
+          - name: draft_year
+            description: Year the player was drafted. NULL for undrafted or international signings.
+          - name: strike_zone_top
+            description: Top of the player's calibrated strike zone (feet from ground).
+          - name: strike_zone_bottom
+            description: Bottom of the player's calibrated strike zone (feet from ground).
+          - name: nick_name
+            description: Player's nickname.
+          - name: pronunciation
+            description: Phonetic pronunciation guide for the player's name.
+
+      # ────────────────────────────────────────────────────────────
+      # TEAMS
+      # ────────────────────────────────────────────────────────────
+      - name: teams
+        description: >
+          MLB team registry appended on each pipeline load. All columns are DDL-nullable.
+          One row per team per load run — use season to filter to a specific year.
+        columns:
+          - name: _dlt_id
+            description: dlt surrogate row key (NOT NULL per DDL).
+            data_tests:
+              - not_null
+              - unique
+          - name: _dlt_load_id
+            description: dlt internal load batch identifier (NOT NULL per DDL).
+            data_tests:
+              - not_null
+          - name: id
+            description: MLB team ID — used as FK in games, rosters, transactions. DDL allows NULL.
+          - name: name
+            description: >
+              Full franchise name (e.g. "New York Yankees").
+          - name: team_name
+            description: >
+              Short team nickname (e.g. "Yankees").
+          - name: abbreviation
+            description: Three-letter team abbreviation (e.g. NYY, BOS, LAD).
+          - name: location_name
+            description: City or region portion of the team name.
+          - name: short_name
+            description: Short display name combining city and nickname.
+          - name: franchise_name
+            description: Historical franchise name.
+          - name: club_name
+            description: Club-level name as used in MLB internal systems.
+          - name: first_year_of_play
+            description: Year the franchise first played in the major leagues (nvarchar).
+          - name: active
+            description: TRUE if the team is currently active in MLB.
+          - name: season
+            description: Season year this team record was fetched for.
+          - name: league__id
+            description: League ID — 103 = American League, 104 = National League.
+          - name: league__name
+            description: >
+              League name (e.g. "American League").
+          - name: division__id
+            description: Division ID (e.g. 200 = AL West, 205 = NL West).
+          - name: division__name
+            description: >
+              Division name (e.g. "American League West").
+          - name: sport__id
+            description: Sport ID — always 1 for MLB.
+          - name: sport__name
+            description: >
+              Sport name — always "Major League Baseball".
+          - name: venue__id
+            description: Home stadium venue ID. FK to dw.venues.
+          - name: venue__name
+            description: Name of the home stadium.
+          - name: spring_venue__id
+            description: Spring training venue ID.
+          - name: spring_league__id
+            description: Spring training league ID.
+          - name: spring_league__name
+            description: >
+              Spring training league name (e.g. "Cactus League").
+          - name: spring_league__abbreviation
+            description: Spring training league abbreviation (e.g. CL, GL).
+          - name: all_star_status
+            description: >
+              All-Star game affiliation code (e.g. "N" = NL, "A" = AL).
+
+      # ────────────────────────────────────────────────────────────
+      # VENUES
+      # ────────────────────────────────────────────────────────────
+      - name: venues
+        description: >
+          Stadium and venue reference table. venue_id is the clustered PRIMARY KEY
+          per DDL. Only 7 columns exist — no surface/capacity/dimension fields.
+        columns:
+          - name: venue_id
+            description: MLB venue ID — clustered PRIMARY KEY (NOT NULL, unique per DDL).
+            data_tests:
+              - not_null
+              - unique
+          - name: venue_name
+            description: Official current name of the stadium (nvarchar 255).
+          - name: venue_link
+            description: Relative API path to this venue's detail endpoint.
+          - name: spring_venue_id
+            description: MLB venue ID of the team's spring training ballpark.
+          - name: spring_venue_link
+            description: Relative API path to the spring training venue endpoint.
+          - name: first_year_of_play
+            description: First calendar year games were played at this venue.
+          - name: location_name
+            description: City or geographic description where the venue is located.
+
+      # ────────────────────────────────────────────────────────────
+      # SEASONS
+      # ────────────────────────────────────────────────────────────
+      - name: seasons
+        description: >
+          Season metadata including schedule boundary dates and qualification thresholds.
+          Fetched for every year from 1990 to present. Fully replaced on each load.
+          All columns except _dlt_load_id and _dlt_id are DDL-nullable.
+        columns:
+          - name: _dlt_id
+            description: dlt surrogate row key (NOT NULL per DDL).
+            data_tests:
+              - not_null
+              - unique
+          - name: _dlt_load_id
+            description: dlt internal load batch identifier (NOT NULL per DDL).
+            data_tests:
+              - not_null
+          - name: season
+            description: Season year as an integer (bigint). DDL allows NULL.
+          - name: season_id
+            description: >
+              Season year as a string (e.g. "2024"). Use for string joins.
+          - name: has_wildcard
+            description: TRUE if the season included a wild-card round in the playoffs.
+          - name: pre_season_start_date
+            description: First date of the spring training / pre-season schedule.
+          - name: pre_season_end_date
+            description: Last date of the pre-season schedule.
+          - name: season_start_date
+            description: Overall first date of the season including spring training.
+          - name: season_end_date
+            description: Overall last date of the season including post-season.
+          - name: spring_start_date
+            description: First date of spring training.
+          - name: spring_end_date
+            description: Last date of spring training.
+          - name: regular_season_start_date
+            description: Opening Day date for the regular season.
+          - name: regular_season_end_date
+            description: Final date of the regular season.
+          - name: last_date1st_half
+            description: Last game date of the first half (before All-Star break).
+          - name: all_star_date
+            description: Date of the MLB All-Star Game.
+          - name: first_date2nd_half
+            description: First game date of the second half (after All-Star break).
+          - name: post_season_start_date
+            description: First date of the post-season. NULL for seasons with no playoffs.
+          - name: post_season_end_date
+            description: Last date of the post-season. NULL for seasons with no playoffs.
+          - name: offseason_start_date
+            description: First date of the off-season period.
+          - name: off_season_end_date
+            description: Last date of the off-season period.
+          - name: qualifier_plate_appearances
+            description: Minimum plate appearances required to qualify for batting title (float).
+          - name: qualifier_outs_pitched
+            description: Minimum outs pitched required to qualify for ERA title (float).
+          - name: season_level_gameday_type
+            description: Gameday type classification at the season level (internal MLB flag).
+          - name: game_level_gameday_type
+            description: Gameday type classification at the individual game level (internal MLB flag).
+
+      # ────────────────────────────────────────────────────────────
+      # PLAYER STATS
+      # ────────────────────────────────────────────────────────────
+      - name: player_stats
+        description: >
+          Season-level batting, pitching, fielding, and running statistics for every
+          eligible player. Fetched via paginated /stats endpoint with playerPool=All.
+          Appended by season. Composite PK is (season, player__id, group, position__code).
+        columns:
+          - name: _dlt_id
+            description: dlt surrogate row key (NOT NULL per DDL).
+            data_tests:
+              - not_null
+              - unique
+          - name: _dlt_load_id
+            description: dlt internal load batch identifier (NOT NULL per DDL).
+            data_tests:
+              - not_null
+          - name: season
+            description: Season year the statistics cover (NOT NULL per DDL).
+            data_tests:
+              - not_null
+          - name: group
+            description: Statistical group — one of hitting, pitching, fielding, or running (NOT NULL per DDL).
+            quote: true  # quote is need because group is a key word
+            data_tests:
+              - not_null
+              - accepted_values:
+                  values: ['hitting', 'pitching', 'fielding', 'running']
+          - name: player__id
+            description: MLB player ID. FK to dw.mlbplayers (NOT NULL per DDL).
+            data_tests:
+              - not_null
+          - name: player__full_name
+            description: Full name of the player.
+          - name: position__code
+            description: Positional context code (NOT NULL per DDL).
+            data_tests:
+              - not_null
+          - name: position__name
+            description: Position name for the stat split.
+          - name: team__id
+            description: MLB team ID the stats are attributed to. FK to dw.teams.
+          - name: team__name
+            description: Team name the stats are attributed to.
+          - name: stat__games_played
+            description: Games in which the player appeared.
+          - name: stat__at_bats
+            description: Total at-bats. NULL for pitching/fielding/running groups.
+          - name: stat__hits
+            description: Total hits. NULL for pitching/fielding/running groups.
+          - name: stat__home_runs
+            description: Home runs. NULL for non-hitting groups.
+          - name: stat__rbi
+            description: Runs batted in. NULL for non-hitting groups.
+          - name: stat__avg
+            description: Batting average (nvarchar). NULL for non-hitting groups.
+          - name: stat__obp
+            description: On-base percentage (nvarchar). NULL for non-hitting groups.
+          - name: stat__slg
+            description: Slugging percentage (nvarchar). NULL for non-hitting groups.
+          - name: stat__ops
+            description: On-base plus slugging (nvarchar). NULL for non-hitting groups.
+          - name: stat__stolen_bases
+            description: Stolen bases. Populated for hitting and running groups.
+          - name: stat__era
+            description: Earned run average (nvarchar). NULL for non-pitching groups.
+          - name: stat__innings_pitched
+            description: Innings pitched in fractional format (nvarchar). NULL for non-pitching groups.
+          - name: stat__wins
+            description: Pitching wins. NULL for non-pitching groups.
+          - name: stat__losses
+            description: Pitching losses. NULL for non-pitching groups.
+          - name: stat__saves
+            description: Saves recorded. NULL for non-pitching groups.
+          - name: stat__whip
+            description: Walks and hits per inning pitched (nvarchar). NULL for non-pitching groups.
+          - name: stat__strike_outs
+            description: Strikeouts (context-dependent — batters faced for pitching, recorded for hitting).
+          - name: stat__base_on_balls
+            description: Walks (base on balls). Context-dependent.
+          - name: stat__earned_runs
+            description: Earned runs allowed. NULL for non-pitching groups.
+          - name: stat__fielding
+            description: Fielding percentage (nvarchar). NULL for non-fielding groups.
+          - name: stat__errors
+            description: Errors committed. NULL for non-fielding groups.
+          - name: stat__assists
+            description: Assists recorded. NULL for non-fielding groups.
+          - name: stat__put_outs
+            description: Put-outs recorded. NULL for non-fielding groups.
+          - name: stat__passed_ball
+            description: Passed balls allowed (catchers only). NULL for non-fielding groups.
+          - name: stat__catcher_era
+            description: ERA of pitchers while a specific catcher was behind the plate. Catchers only.
+          - name: stat__games_started
+            description: Games started (hitting) or started on the mound (pitching).
+
+      # ────────────────────────────────────────────────────────────
+      # DRAFT
+      # ────────────────────────────────────────────────────────────
+      - name: draft
+        description: >
+          MLB draft pick records from 1960 to present. One row per pick.
+          Fully replaced on each load. All columns are DDL-nullable except
+          _dlt_load_id and _dlt_id. Embeds full person biographical data directly.
+        columns:
+          - name: _dlt_id
+            description: dlt surrogate row key (NOT NULL per DDL).
+            data_tests:
+              - not_null
+              - unique
+          - name: _dlt_load_id
+            description: dlt internal load batch identifier (NOT NULL per DDL).
+            data_tests:
+              - not_null
+          - name: year
+            description: Draft year (nvarchar).
+          - name: pick_round
+            description: >
+              Round label in which the player was selected (nvarchar — may be "S" for supplemental).
+          - name: pick_number
+            description: Overall pick number across all rounds.
+          - name: round_pick_number
+            description: Pick number within the round only (resets to 1 each round).
+          - name: display_pick_number
+            description: Display-formatted pick number used in official MLB draft coverage.
+          - name: rank
+            description: Pre-draft prospect ranking assigned by MLB scouting.
+          - name: is_drafted
+            description: TRUE if the player was officially drafted.
+          - name: is_pass
+            description: TRUE if the team passed on this pick slot.
+          - name: signing_bonus
+            description: Actual signing bonus paid to the player (nvarchar). NULL if unsigned.
+          - name: pick_value
+            description: Slot value of the pick as assigned by MLB's bonus pool system (nvarchar).
+          - name: person__id
+            description: MLB player ID assigned to the drafted player. NULL if the player never signed.
+          - name: person__full_name
+            description: Full name of the drafted player.
+          - name: person__first_name
+            description: First name of the drafted player.
+          - name: person__last_name
+            description: Last name of the drafted player.
+          - name: person__birth_date
+            description: Player's date of birth at time of draft (YYYY-MM-DD nvarchar).
+          - name: person__bat_side__code
+            description: Batting side at time of draft — L, R, or S.
+            data_tests:
+              - accepted_values:
+                  values: ['L', 'R', 'S', null]
+          - name: person__pitch_hand__code
+            description: Pitching hand at time of draft — L or R. NULL for non-pitchers.
+            data_tests:
+              - accepted_values:
+                  values: ['L', 'R', 'S',null]
+          - name: person__primary_position__code
+            description: Primary position code of the drafted player.
+          - name: person__primary_position__name
+            description: Primary position name of the drafted player.
+          - name: person__mlb_debut_date
+            description: Date of the player's first MLB appearance. NULL if never reached MLB.
+          - name: person__active
+            description: TRUE if the player is currently active on an MLB roster.
+          - name: team__id
+            description: MLB team ID that made the pick. FK to dw.teams.
+          - name: team__name
+            description: Name of the drafting team.
+          - name: school__name
+            description: Name of the player's school at time of draft. FK to dw.school_type_lookup.
+          - name: school__city
+            description: City of the player's school.
+          - name: school__state
+            description: State of the player's school.
+          - name: school__school_class
+            description: >
+              MLB classification of the school (e.g. "College", "HighSchool").
+          - name: home__city
+            description: Player's hometown city at time of draft.
+          - name: home__state
+            description: Player's hometown state at time of draft.
+          - name: home__country
+            description: Player's hometown country at time of draft.
+          - name: draft_type__code
+            description: >
+              Code for the type of draft (e.g. "REG" = regular).
+          - name: draft_type__description
+            description: Human-readable description of the draft type.
+
+      # ────────────────────────────────────────────────────────────
+      # AWARD RECIPIENTS
+      # ────────────────────────────────────────────────────────────
+      - name: award_recipients
+        description: >
+          MLB award recipients by award and season. One row per award/season/player.
+          Merged on (award_id, season, player_id). award_id, season, and player_id
+          are NOT NULL per DDL and form the composite primary key.
+        columns:
+          - name: _dlt_id
+            description: dlt surrogate row key (NOT NULL per DDL).
+            data_tests:
+              - not_null
+              - unique
+          - name: _dlt_load_id
+            description: dlt internal load batch identifier (NOT NULL per DDL).
+            data_tests:
+              - not_null
+          - name: award_id
+            description: MLB API award identifier (e.g. MLBHOF, ROTY, CYA). NOT NULL per DDL.
+            data_tests:
+              - not_null
+          - name: award_name
+            description: >
+              Full name of the award (e.g. "Cy Young Award").
+          - name: award_date
+            description: Date the award was presented (YYYY-MM-DD nvarchar).
+          - name: season
+            description: Season year the award covers (nvarchar). NOT NULL per DDL.
+            data_tests:
+              - not_null
+          - name: player_id
+            description: MLB player ID of the recipient. NOT NULL per DDL.
+            data_tests:
+              - not_null
+          - name: player_name
+            description: Full name of the award recipient.
+          - name: team_id
+            description: Team the player represented when receiving the award.
+          - name: position_code
+            description: Primary position code of the award recipient.
+          - name: position_name
+            description: Primary position name of the award recipient.
+          - name: position_type
+            description: Broad position category (Pitcher, Catcher, Infielder, Outfielder).
+          - name: position_abbreviation
+            description: Standard position abbreviation (e.g. P, C, 3B).
+          - name: notes
+            description: >
+              Additional context about the award (e.g. "Unanimous selection").
+
+     
+      # ────────────────────────────────────────────────────────────
+      # ZONES (manual lookup)
+      # ────────────────────────────────────────────────────────────
+      - name: Zones
+        description: >
+          Strike zone region lookup used to decode pitch_data__zone in dw.play_events.
+          Zones 1–9 are inside the strike zone; zones 11–14 are chase regions.
+          id is NOT NULL per DDL.
+        columns:
+          - name: id
+            description: Surrogate lookup identifier (NOT NULL per DDL, int).
+            data_tests:
+              - not_null
+              - unique
+          - name: zone
+            description: Zone number as returned by the MLB Statcast API (1–14). DDL allows NULL.
+          - name: description
+            description: Human-readable label for the zone (varchar 80). DDL allows NULL.
+
+      # ────────────────────────────────────────────────────────────
+      # SCHOOL TYPE LOOKUP (manual lookup)
+      # ────────────────────────────────────────────────────────────
+      - name: school_type_lookup
+        description: >
+          Reference table classifying schools by type for use with dw.draft.
+          school_name is the clustered PRIMARY KEY per DDL. classified_by defaults
+          to "regex" and created_date defaults to getdate() at insert time.
+        columns:
+          - name: school_name
+            description: Name of the school — clustered PRIMARY KEY (NOT NULL, unique per DDL).
+            data_tests:
+              - not_null
+              - unique
+          - name: school_type
+            description: Standardised school classification (NOT NULL per DDL).
+            data_tests:
+              - not_null
+              - accepted_values:
+                  values: ['College', 'High School', 'Junior College', 'Independent', 'International']
+          - name: classified_by
+            description: >
+              Method used to classify the school — defaults to "regex".
+            data_tests:
+              - not_null
+          - name: created_date
+            description: Timestamp when this lookup record was inserted — defaults to getdate().
+            data_tests:
+              - not_null

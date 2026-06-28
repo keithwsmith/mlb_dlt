@@ -1,0 +1,13 @@
+macros:
+
+  - name: insert_metadata
+    description: A macro create a record in the audit table of the row count.  Columns are:RECORDS_COUNT, HAPPENED_AT, DESCRIPTION,RUN_TYPE
+    arguments:
+      - name: tableN
+        type: string
+        description: The table/model
+      - name: run_type
+        type: string
+        description: pre-hook type (pre_hook or post_hook)
+
+  

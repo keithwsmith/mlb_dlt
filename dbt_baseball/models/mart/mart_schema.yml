@@ -1,0 +1,1185 @@
+version: 2
+
+models:
+
+  # ============================================================
+  # mart_batter_game
+  # ============================================================
+  - name: mart_batter_game
+    description: "Batter performance per game – plate discipline, quality of contact, and batted ball profile."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - game_pk
+            - batter_id
+    columns:
+      # ── keys & identifiers ──────────────────────────────────
+      - name: game_pk
+        description: "MLB game identifier."
+        tests:
+          - not_null
+
+      - name: season
+        description: "Season year."
+        tests:
+          - not_null
+
+      - name: batter_id
+        description: "MLB player ID of the batter."
+        tests:
+          - not_null
+
+      - name: load_id
+        description: "Most recent dlt load identifier for this group."
+        tests:
+          - not_null
+
+      - name: batter_side
+        description: "Batting side for this game (R/L/S)."
+        tests:
+          - accepted_values:
+              values: ['R', 'L', 'S']
+              config:
+                where: "batter_side is not null"
+
+      # ── volume ──────────────────────────────────────────────
+      - name: pitches_seen
+        description: "Total pitches seen."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+
+      - name: plate_appearances
+        description: "Distinct at-bat indices (plate appearances)."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+
+      # ── discipline ──────────────────────────────────────────
+      - name: swings
+        description: "Total swings."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: whiffs
+        description: "Swings and misses."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: chases
+        description: "Swings at pitches outside the zone."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: zone_swings
+        description: "Swings at pitches inside the zone."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: called_strikes_taken
+        description: "Called strikes where batter did not swing."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: balls_taken
+        description: "Balls taken (no swing)."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: fouls
+        description: "Foul balls."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: balls_in_play
+        description: "Balls put in play."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # ── zone awareness ──────────────────────────────────────
+      - name: pitches_in_zone
+        description: "Pitches inside the strike zone."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: takes_in_zone
+        description: "Pitches in zone where batter did not swing."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # ── first pitch ─────────────────────────────────────────
+      - name: first_pitches
+        description: "Number of first pitches of at-bats."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: first_pitch_swings
+        description: "Swings on first pitches."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: first_pitch_in_play
+        description: "First pitches put in play."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # ── count context ───────────────────────────────────────
+      - name: two_strike_pitches
+        description: "Pitches seen with two strikes."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: two_strike_whiffs
+        description: "Whiffs with two strikes."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # ── batted ball volume ──────────────────────────────────
+      - name: batted_ball_events
+        description: "Total batted ball events."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: avg_exit_velo
+        description: "Average exit velocity (mph)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 150
+              config:
+                where: "avg_exit_velo is not null"
+
+      - name: max_exit_velo
+        description: "Maximum exit velocity (mph)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 150
+              config:
+                where: "max_exit_velo is not null"
+
+      - name: avg_launch_angle
+        description: "Average launch angle (degrees)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -90
+              max_value: 90
+              config:
+                where: "avg_launch_angle is not null"
+
+      - name: avg_hit_distance
+        description: "Average hit distance (feet)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "avg_hit_distance is not null"
+
+      - name: max_hit_distance
+        description: "Maximum hit distance (feet)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              config:
+                where: "max_hit_distance is not null"
+
+      # ── batted ball quality ─────────────────────────────────
+      - name: hard_hits
+        description: "Batted balls with exit velocity >= 95 mph."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: barrels
+        description: "Barreled batted balls."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: sweet_spot_events
+        description: "Batted balls in the sweet-spot launch angle range."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # ── batted ball trajectory ──────────────────────────────
+      - name: ground_balls
+        description: "Ground balls."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: line_drives
+        description: "Line drives."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: fly_balls
+        description: "Fly balls."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: popups
+        description: "Pop-ups."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # ── rates ───────────────────────────────────────────────
+      - name: swing_pct
+        description: "Swing rate (swings / pitches_seen)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "swing_pct is not null"
+
+      - name: whiff_pct
+        description: "Whiff rate (whiffs / swings)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "whiff_pct is not null"
+
+      - name: chase_pct
+        description: "Chase rate (chases / pitches outside zone)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "chase_pct is not null"
+
+      - name: zone_swing_pct
+        description: "Zone swing rate (zone_swings / pitches_in_zone)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "zone_swing_pct is not null"
+
+      - name: hard_hit_pct
+        description: "Hard-hit rate (hard_hits / batted_ball_events)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "hard_hit_pct is not null"
+
+      - name: barrel_pct
+        description: "Barrel rate (barrels / batted_ball_events)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "barrel_pct is not null"
+
+      - name: gb_pct
+        description: "Ground ball rate."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "gb_pct is not null"
+
+      - name: ld_pct
+        description: "Line drive rate."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "ld_pct is not null"
+
+      - name: fb_pct
+        description: "Fly ball rate."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "fb_pct is not null"
+
+  # ============================================================
+  # mart_matchups
+  # ============================================================
+  - name: mart_matchups
+    description: "Pitcher vs batter matchup aggregation per season – pitch mix, results, and contact quality."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - season
+            - pitcher_id
+            - batter_id
+    columns:
+      # ── keys & identifiers ──────────────────────────────────
+      - name: season
+        description: "Season year."
+        tests:
+          - not_null
+
+      - name: pitcher_id
+        description: "MLB player ID of the pitcher."
+        tests:
+          - not_null
+
+      - name: batter_id
+        description: "MLB player ID of the batter."
+        tests:
+          - not_null
+
+      - name: load_id
+        description: "Most recent dlt load identifier."
+        tests:
+          - not_null
+
+      # ── volume ──────────────────────────────────────────────
+      - name: total_pitches
+        description: "Total pitches in the matchup."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+
+      - name: plate_appearances
+        description: "Distinct plate appearances in the matchup."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+
+      # ── pitch mix ───────────────────────────────────────────
+      - name: fastballs
+        description: "Four-seam fastballs thrown."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: breaking_balls
+        description: "Breaking balls thrown (SL, CU, KC, SV, ST)."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: offspeed
+        description: "Offspeed pitches thrown (CH, FS, FO)."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # ── results ─────────────────────────────────────────────
+      - name: swings
+        description: "Total swings."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: whiffs
+        description: "Swings and misses."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: chases
+        description: "Swings at pitches outside the zone."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: balls_in_play
+        description: "Balls put in play."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: strikes
+        description: "Total strikes."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: balls_total
+        description: "Total balls."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # ── zone ────────────────────────────────────────────────
+      - name: in_zone
+        description: "Pitches inside the strike zone."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # ── average location ────────────────────────────────────
+      - name: avg_plate_x
+        description: "Average horizontal pitch location (feet from center)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -9
+              max_value: 7
+              config:
+                where: "avg_plate_x is not null"
+
+      - name: avg_plate_z
+        description: "Average vertical pitch location (feet from ground)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -3
+              max_value: 9
+              config:
+                where: "avg_plate_z is not null"
+
+      # ── batted ball quality ─────────────────────────────────
+      - name: batted_ball_events
+        description: "Total batted ball events in the matchup."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: avg_exit_velo
+        description: "Average exit velocity (mph)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 150
+              config:
+                where: "avg_exit_velo is not null"
+
+      - name: max_exit_velo
+        description: "Maximum exit velocity (mph)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 150
+              config:
+                where: "max_exit_velo is not null"
+
+      - name: avg_launch_angle
+        description: "Average launch angle (degrees)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -90
+              max_value: 90
+              config:
+                where: "avg_launch_angle is not null"
+
+      - name: hard_hits
+        description: "Hard-hit batted balls (>= 95 mph exit velo)."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: barrels
+        description: "Barreled batted balls."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # ── rates ───────────────────────────────────────────────
+      - name: whiff_pct
+        description: "Whiff rate (whiffs / swings)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "whiff_pct is not null"
+
+      - name: chase_pct
+        description: "Chase rate (chases / pitches outside zone)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "chase_pct is not null"
+
+      - name: strike_pct
+        description: "Strike rate (strikes / total_pitches)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "strike_pct is not null"
+
+      - name: hard_hit_pct
+        description: "Hard-hit rate (hard_hits / batted_ball_events)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "hard_hit_pct is not null"
+
+      - name: fastball_pct
+        description: "Fastball usage rate."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "fastball_pct is not null"
+
+      - name: breaking_pct
+        description: "Breaking ball usage rate."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "breaking_pct is not null"
+
+      - name: offspeed_pct
+        description: "Offspeed usage rate."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "offspeed_pct is not null"
+
+  # ============================================================
+  # mart_pitcher_arsenal
+  # ============================================================
+  - name: mart_pitcher_arsenal
+    description: "Pitcher arsenal breakdown by pitch type per season – usage, velocity, movement, spin, and results."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - season
+            - pitcher_id
+            - pitch_type_code
+    columns:
+      # ── keys & identifiers ──────────────────────────────────
+      - name: season
+        description: "Season year."
+        tests:
+          - not_null
+
+      - name: pitcher_id
+        description: "MLB player ID of the pitcher."
+        tests:
+          - not_null
+
+      - name: pitch_type_code
+        description: "Two-character pitch type code."
+        tests:
+          - not_null
+
+      - name: pitch_type_description
+        description: "Full pitch type description from dim_pitch_type."
+        # Nullable if pitch type not found in dimension
+
+      - name: pitch_category
+        description: "Pitch grouping (Fastball, Breaking, Offspeed, Other)."
+        tests:
+          - accepted_values:
+              values:
+                - Fastball
+                - Breaking
+                - Offspeed
+                - Other
+              config:
+                where: "pitch_category is not null"
+
+      - name: load_id
+        description: "Most recent dlt load identifier."
+        tests:
+          - not_null
+
+      # ── usage ───────────────────────────────────────────────
+      - name: total_thrown
+        description: "Total pitches of this type thrown."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+
+      # ── velocity ────────────────────────────────────────────
+      - name: avg_velo
+        description: "Average release speed (mph)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 20
+              max_value: 110
+              config:
+                where: "avg_velo is not null"
+
+      - name: max_velo
+        description: "Maximum release speed (mph)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 20
+              max_value: 110
+              config:
+                where: "max_velo is not null"
+
+      - name: min_velo
+        description: "Minimum release speed (mph)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 20
+              max_value: 110
+              config:
+                where: "min_velo is not null"
+
+      # ── movement ────────────────────────────────────────────
+      - name: avg_h_break
+        description: "Average horizontal movement (pfx_x, inches)."
+        # Can be negative or positive depending on arm side
+
+      - name: avg_v_break
+        description: "Average vertical movement (pfx_z, inches)."
+        # Can be negative or positive
+
+      - name: avg_ivb
+        description: "Average induced vertical break (inches)."
+        # Nullable
+
+      # ── spin ────────────────────────────────────────────────
+      - name: avg_spin_rate
+        description: "Average spin rate (rpm)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 4300
+              config:
+                where: "avg_spin_rate is not null"
+
+      - name: avg_spin_direction
+        description: "Average spin direction (degrees)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 360
+              config:
+                where: "avg_spin_direction is not null"
+
+      # ── release point ───────────────────────────────────────
+      - name: avg_release_x
+        description: "Average horizontal release position (feet from center)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -13
+              max_value: 11
+              config:
+                where: "avg_release_x is not null"
+
+      - name: avg_release_z
+        description: "Average vertical release position (feet from ground)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -2
+              max_value: 13
+              config:
+                where: "avg_release_z is not null"
+
+      - name: avg_extension
+        description: "Average pitcher extension toward home plate (feet)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -4
+              max_value: 12
+              config:
+                where: "avg_extension is not null"
+
+      # ── results ─────────────────────────────────────────────
+      - name: swings
+        description: "Total swings against this pitch type."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: whiffs
+        description: "Swings and misses."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: called_strikes
+        description: "Called strikes."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: chases
+        description: "Swings at pitches outside the zone."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: in_play
+        description: "Balls put in play."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: fouls
+        description: "Foul balls."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: strikes
+        description: "Total strikes."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # ── zone ────────────────────────────────────────────────
+      - name: in_zone
+        description: "Pitches inside the strike zone."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: edge_pitches
+        description: "Pitches on the edge of the zone."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # ── rates ───────────────────────────────────────────────
+      - name: whiff_pct
+        description: "Whiff rate (whiffs / swings)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "whiff_pct is not null"
+
+      - name: chase_pct
+        description: "Chase rate (chases / pitches outside zone)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "chase_pct is not null"
+
+      - name: zone_pct
+        description: "Zone rate (in_zone / total_thrown)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "zone_pct is not null"
+
+      - name: strike_pct
+        description: "Strike rate (strikes / total_thrown)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "strike_pct is not null"
+
+      - name: usage_pct
+        description: "Usage rate of this pitch type within the pitcher's season arsenal."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "usage_pct is not null"
+
+  # ============================================================
+  # mart_pitcher_game
+  # ============================================================
+  - name: mart_pitcher_game
+    description: "Pitcher performance per game – volume, discipline, velocity, spin, movement, and derived rate stats."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - game_pk
+            - pitcher_id
+    columns:
+      # ── keys & identifiers ──────────────────────────────────
+      - name: game_pk
+        description: "MLB game identifier."
+        tests:
+          - not_null
+
+      - name: season
+        description: "Season year."
+        tests:
+          - not_null
+
+      - name: pitcher_id
+        description: "MLB player ID of the pitcher."
+        tests:
+          - not_null
+
+      - name: load_id
+        description: "Most recent dlt load identifier."
+        tests:
+          - not_null
+
+      - name: pitcher_hand
+        description: "Pitching hand (R/L)."
+        tests:
+          - accepted_values:
+              values: ['R', 'L']
+              config:
+                where: "pitcher_hand is not null"
+
+      # ── volume ──────────────────────────────────────────────
+      - name: total_pitches
+        description: "Total pitches thrown in the game."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+
+      - name: balls_in_play
+        description: "Balls put in play."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # ── results ─────────────────────────────────────────────
+      - name: strikes
+        description: "Total strikes."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: balls_total
+        description: "Total balls."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: called_strikes
+        description: "Called strikes."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: whiffs
+        description: "Swings and misses."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: fouls
+        description: "Foul balls."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # ── swing / contact ─────────────────────────────────────
+      - name: swings
+        description: "Total swings."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: contact
+        description: "Contact events (swings minus whiffs)."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # ── zone / chase ────────────────────────────────────────
+      - name: in_zone_pitches
+        description: "Pitches inside the strike zone."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: chases
+        description: "Swings at pitches outside the zone."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: zone_swings
+        description: "Swings at pitches inside the zone."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: zone_whiffs
+        description: "Whiffs on pitches inside the zone."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: edge_pitches
+        description: "Pitches on the edge of the zone."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # ── umpire ──────────────────────────────────────────────
+      - name: ump_missed_calls_favor_pitcher
+        description: "Called strikes on pitches outside the zone."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: ump_missed_calls_favor_batter
+        description: "Called balls on pitches inside the zone."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # ── count context ───────────────────────────────────────
+      - name: first_pitches
+        description: "Number of first pitches of at-bats."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: first_pitch_strikes
+        description: "Strikes on first pitches."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: two_strike_pitches
+        description: "Pitches thrown with two strikes."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: two_strike_whiffs
+        description: "Whiffs with two strikes."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # ── velocity ────────────────────────────────────────────
+      - name: avg_velo
+        description: "Average release speed (mph)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 20
+              max_value: 110
+              config:
+                where: "avg_velo is not null"
+
+      - name: max_velo
+        description: "Maximum release speed (mph)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 20
+              max_value: 110
+              config:
+                where: "max_velo is not null"
+
+      - name: min_velo
+        description: "Minimum release speed (mph)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 20
+              max_value: 110
+              config:
+                where: "min_velo is not null"
+
+      # ── spin ────────────────────────────────────────────────
+      - name: avg_spin_rate
+        description: "Average spin rate (rpm)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 4300
+              config:
+                where: "avg_spin_rate is not null"
+
+      # ── movement ────────────────────────────────────────────
+      - name: avg_h_break
+        description: "Average horizontal movement (pfx_x, inches)."
+        # Signed value – no range test
+
+      - name: avg_v_break
+        description: "Average vertical movement (pfx_z, inches)."
+        # Signed value – no range test
+
+      # ── extension ───────────────────────────────────────────
+      - name: avg_extension
+        description: "Average pitcher extension toward home plate (feet)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 2
+              max_value: 12
+              config:
+                where: "avg_extension is not null"
+
+      # ── rates ───────────────────────────────────────────────
+      - name: strike_pct
+        description: "Strike rate (strikes / total_pitches)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "strike_pct is not null"
+
+      - name: whiff_pct
+        description: "Whiff rate (whiffs / swings)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "whiff_pct is not null"
+
+      - name: zone_pct
+        description: "Zone rate (in_zone_pitches / total_pitches)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "zone_pct is not null"
+
+      - name: chase_pct
+        description: "Chase rate (chases / pitches outside zone)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "chase_pct is not null"
+
+      - name: contact_pct
+        description: "Contact rate (contact / swings)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "contact_pct is not null"
+
+      - name: first_pitch_strike_pct
+        description: "First-pitch strike rate."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "first_pitch_strike_pct is not null"
+
+      - name: swing_pct
+        description: "Swing rate (swings / total_pitches)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "swing_pct is not null"
+
+      - name: csw_pct
+        description: "Called strike + whiff rate (called_strikes / total_pitches)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "csw_pct is not null"
+
+      - name: edge_pct
+        description: "Edge pitch rate (edge_pitches / total_pitches)."
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              config:
+                where: "edge_pct is not null"

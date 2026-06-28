@@ -1,0 +1,1693 @@
+version: 2
+
+models:
+  
+  - name: dim_game_details
+    description: >
+      Dimension table capturing per-game summary data for MLB games, including
+      weather conditions, attendance, game duration, pitcher decisions (win/loss/save),
+      and aggregated batting and pitching statistics for both home and away teams.
+      Built as an incremental model using _dlt_load_id to detect new records.
+    config:
+      materialized: incremental
+      unique_key: game_pk
+
+    columns:
+      # --- Primary Key ---
+      - name: game_pk
+        description: Unique identifier for each MLB game. Serves as the primary key and incremental unique key.
+        tests:
+          - unique
+          - not_null
+          
+
+      # --- Weather ---
+      - name: weather_condition
+        description: General weather description at game time (e.g., Clear, Cloudy, Dome, Drizzle).
+
+      - name: weather_temp
+        description: Temperature in degrees Fahrenheit at game time.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: -20
+              max_value: 130
+
+      - name: weather_wind
+        description: Wind speed and direction description at game time.
+
+      # --- Game Info ---
+      - name: attendance
+        description: Total number of fans in attendance for the game.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: first_pitch
+        description: Scheduled or actual first-pitch time for the game.
+
+      - name: game_duration_minutes
+        description: Total duration of the game in minutes.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # --- Decisions ---
+      - name: winning_pitcher_id
+        description: Unique identifier for the pitcher credited with the win.
+
+      - name: winning_pitcher_name
+        description: Full name of the winning pitcher.
+
+      - name: losing_pitcher_id
+        description: Unique identifier for the pitcher charged with the loss.
+
+      - name: losing_pitcher_name
+        description: Full name of the losing pitcher.
+
+      - name: save_pitcher_id
+        description: Unique identifier for the pitcher credited with the save, if applicable.
+
+      - name: save_pitcher_name
+        description: Full name of the save pitcher, if applicable.
+
+      # --- Home Batting ---
+      - name: home_runs
+        description: Total runs scored by the home team.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: home_hits
+        description: Total hits recorded by the home team.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: home_doubles
+        description: Number of doubles hit by the home team.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: home_triples
+        description: Number of triples hit by the home team.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: home_home_runs
+        description: Number of home runs hit by the home team.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: home_rbi
+        description: Total runs batted in by the home team.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: home_stolen_bases
+        description: Number of stolen bases by the home team.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: home_strikeouts
+        description: Number of times home team batters struck out.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: home_walks
+        description: Number of walks drawn by home team batters.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: home_left_on_base
+        description: Number of runners left on base by the home team.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # --- Away Batting ---
+      - name: away_runs
+        description: Total runs scored by the away team.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: away_hits
+        description: Total hits recorded by the away team.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: away_doubles
+        description: Number of doubles hit by the away team.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: away_triples
+        description: Number of triples hit by the away team.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: away_home_runs
+        description: Number of home runs hit by the away team.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: away_rbi
+        description: Total runs batted in by the away team.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: away_stolen_bases
+        description: Number of stolen bases by the away team.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: away_strikeouts
+        description: Number of times away team batters struck out.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: away_walks
+        description: Number of walks drawn by away team batters.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: away_left_on_base
+        description: Number of runners left on base by the away team.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # --- Home Pitching ---
+      - name: home_pitching_strikeouts
+        description: Total strikeouts recorded by home team pitchers.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: home_pitching_walks
+        description: Total walks issued by home team pitchers.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: home_pitching_hits_allowed
+        description: Total hits allowed by home team pitchers.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: home_pitching_runs_allowed
+        description: Total runs allowed by home team pitchers.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: home_pitching_earned_runs
+        description: Total earned runs allowed by home team pitchers.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: home_pitching_home_runs_allowed
+        description: Total home runs allowed by home team pitchers.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # --- Away Pitching ---
+      - name: away_pitching_strikeouts
+        description: Total strikeouts recorded by away team pitchers.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: away_pitching_walks
+        description: Total walks issued by away team pitchers.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: away_pitching_hits_allowed
+        description: Total hits allowed by away team pitchers.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: away_pitching_runs_allowed
+        description: Total runs allowed by away team pitchers.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: away_pitching_earned_runs
+        description: Total earned runs allowed by away team pitchers.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: away_pitching_home_runs_allowed
+        description: Total home runs allowed by away team pitchers.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      # --- Audit ---
+      - name: load_id
+        description: >
+          Monotonically increasing load identifier (mapped from _dlt_load_id).
+          Used by the incremental strategy to detect new records.
+        tests:
+          - not_null
+
+      - name: _dlt_id
+        description: Unique row identifier assigned by the dlt ingestion pipeline.
+        tests:
+          - unique
+          - not_null
+  - name: dim_game_umpires
+    description: >
+      Dimension table containing umpire assignments per game. Each row represents
+      a single umpire's role in a specific game. Materialized as incremental
+      using a surrogate key derived from game_pk and the source load identifier.
+    columns:
+      - name: game_umpire_key
+        description: >
+          Surrogate key generated from game_pk and load_id via
+          dbt_utils.generate_surrogate_key. Serves as the unique identifier
+          for each game-umpire assignment record.
+        tests:
+          - unique
+          - not_null
+
+      - name: game_pk
+        description: >
+          Primary key of the game from the source system. References the
+          specific game to which the umpire was assigned.
+        tests:
+          - not_null
+
+      - name: official_type
+        description: >
+          The positional role of the umpire during the game
+          (e.g., Home Plate, First Base, Second Base, Third Base,
+          Left Field, Right Field).
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - "Home Plate"
+                - "First Base"
+                - "Second Base"
+                - "Third Base"
+                - "Left Field"
+                - "Right Field"
+              config:
+                severity: warn
+
+      - name: official_id
+        description: >
+          Unique identifier for the umpire from the source system.
+          Can be used to track an individual umpire across multiple games.
+        tests:
+          - not_null
+
+      - name: full_name
+        description: >
+          The full display name of the umpire (e.g., "Angel Hernandez").
+        tests:
+          - not_null
+
+      - name: load_id
+        description: >
+          Source system load identifier (_dlt_id), used for incremental
+          loading. New records are identified by comparing this value
+          against the current maximum in the target table.
+        tests:
+          - not_null
+          
+   
+  - name: dim_challenges
+    description: >
+      Dimension table containing play review and challenge data from MLB games.
+      Each row represents a unique challenged play, identified by the combination
+      of game and play start time. Built as an incremental model, loading only
+      new records based on load_id.
+    config:
+      materialized: incremental
+      unique_key: ['game_pk', 'start_time','pfx_id']
+
+    columns:
+      - name: challenge_key
+        description: >
+          Surrogate key generated from game_pk and start_time,
+          serving as the grain identifier for each challenged play.
+        tests:
+          - unique
+          - not_null
+
+      - name: game_pk
+        description: Unique identifier for the MLB game in which the challenge occurred.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_play_events')
+              field: game_pk
+
+      - name: review_player_link
+        description: URL or resource link to the player profile associated with the reviewed play.
+
+      - name: has_review
+        description: >
+          Flag indicating whether the play was reviewed. Always 1 in this table
+          since the model filters to only reviewed plays.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1]
+
+      - name: review_challenge_team_id
+        description: Identifier of the team that initiated the challenge or review request.
+
+      - name: review_is_overturned
+        description: >
+          Flag indicating whether the original call on the field was overturned
+          as a result of the review (1 = overturned, 0 = call stands).
+        tests:
+          - accepted_values:
+              values: [0, 1]
+
+      - name: review_player_name
+        description: Full name of the player involved in the reviewed play.
+
+      - name: review_player_id
+        description: Unique identifier for the player involved in the reviewed play.
+
+      - name: review_type
+        description: >
+          Category or type of the review conducted (e.g., manager challenge,
+          crew chief review, automatic review).
+        tests:
+          - not_null
+
+      - name: start_time
+        description: >
+          Timestamp marking when the challenged play began. Forms part of the
+          composite unique key alongside game_pk and pfx_id.
+        tests:
+          - not_null
+
+      - name: load_id
+        description: >
+          Monotonically increasing identifier used to track data loads.
+          The incremental strategy uses this value to detect new records.
+        tests:
+          - not_null
+
+  # ============================================================
+  # dim_award
+  # ============================================================
+  - name: dim_award
+    description: "Distinct awards sourced from award_recipients."
+    columns:
+      - name: award_key
+        description: "Surrogate key generated from award_id."
+        tests:
+          - not_null
+          - unique
+
+      - name: award_id
+        description: "Natural key for the award."
+        tests:
+          - not_null
+          - unique
+
+      - name: award_name
+        description: "Display name of the award."
+        tests:
+          - not_null
+
+  # ============================================================
+  # dim_award_recipient
+  # ============================================================
+  - name: dim_award_recipient
+    description: "One row per player who received an award, keeping the most recent attribute values."
+    columns:
+      - name: player_id
+        description: "Unique identifier for the player."
+        tests:
+          - not_null
+          - unique
+
+      - name: player_name
+        description: "Full name of the player."
+        tests:
+          - not_null
+
+      - name: position_code
+        description: "Position code for the player."
+        tests:
+          - not_null
+
+      - name: position_name
+        description: "Full position name."
+        tests:
+          - not_null
+
+      - name: position_type
+        description: "Position type classification (e.g. Pitcher, Hitter)."
+        tests:
+          - not_null
+
+      - name: position_abbreviation
+        description: "Abbreviated position label."
+        tests:
+          - not_null
+
+      - name: team_id
+        description: "Team the player was on, or team that won the award."
+        tests:
+          - not_null
+
+      - name: award_id
+        description: "Foreign key to dim_award."
+        tests:
+          - not_null
+
+      - name: award_name
+        description: "Name of the award received."
+        tests:
+          - not_null
+
+      - name: award_date
+        description: "Date the award was given."
+        tests:
+          - not_null
+
+      - name: season
+        description: "Season in which the award was given."
+        tests:
+          - not_null
+
+      - name: notes
+        description: "Additional notes about the award."
+        # Nullable – no not_null test
+
+      - name: load_id
+        description: "dlt load identifier."
+        tests:
+          - not_null
+
+      - name: event_id
+        description: "dlt event identifier."
+        tests:
+          - not_null
+
+  # ============================================================
+  # dim_date
+  # ============================================================
+  - name: dim_date
+    description: "Date dimension spanning 1960–2027 with baseball-season flags."
+    columns:
+      - name: date_key
+        description: "Integer key in YYYYMMDD format."
+        tests:
+          - not_null
+          - unique
+
+      - name: date_actual
+        description: "Calendar date."
+        tests:
+          - not_null
+          - unique
+
+      - name: day_of_week
+        description: "ISO day-of-week number (1=Sunday … 7=Saturday)."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2, 3, 4, 5, 6, 7]
+
+      - name: day_name
+        description: "Day-of-week name."
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - Sunday
+                - Monday
+                - Tuesday
+                - Wednesday
+                - Thursday
+                - Friday
+                - Saturday
+
+      - name: day_of_month
+        description: "Day number within the month (1-31)."
+        tests:
+          - not_null
+
+      - name: day_of_year
+        description: "Day number within the year (1-366)."
+        tests:
+          - not_null
+
+      - name: week_of_year
+        description: "ISO week number (1-53)."
+        tests:
+          - not_null
+
+      - name: month_number
+        description: "Month number (1-12)."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+
+      - name: month_name
+        description: "Full month name."
+        tests:
+          - not_null
+
+      - name: quarter
+        description: "Calendar quarter (1-4)."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2, 3, 4]
+
+      - name: year
+        description: "Calendar year."
+        tests:
+          - not_null
+
+      - name: is_weekend
+        description: "1 if Saturday or Sunday, else 0."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: is_holiday
+        description: "Holiday flag (placeholder, always 0)."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: baseball_season
+        description: "Season year when the date falls within a baseball season window."
+        # Nullable for off-season dates
+
+      - name: is_spring_training
+        description: "1 if date falls in spring training window."
+        tests:
+          - accepted_values:
+              values: [0, 1]
+
+      - name: is_regular_season
+        description: "1 if date falls in regular season window."
+        tests:
+          - accepted_values:
+              values: [0, 1]
+
+      - name: is_postseason
+        description: "1 if date falls in postseason window."
+        tests:
+          - accepted_values:
+              values: [0, 1]
+
+      - name: is_all_star
+        description: "1 if date is the All-Star Game."
+        tests:
+          - accepted_values:
+              values: [0, 1]
+
+      - name: created_at
+        description: "Row creation timestamp."
+        tests:
+          - not_null
+
+      - name: updated_at
+        description: "Row update timestamp."
+        tests:
+          - not_null
+
+  # ============================================================
+  # dim_draft
+  # ============================================================
+  - name: dim_draft
+    description: "One row per draft pick with player, team, school and draft-type attributes."
+    columns:
+      - name: draft_key
+        description: "Surrogate key (row_number)."
+        tests:
+          - not_null
+          - unique
+
+      - name: person_id
+        description: "MLB person ID of the drafted player."
+        tests:
+          - not_null
+
+      - name: bis_player_id
+        description: "BIS player identifier."
+        # Nullable
+
+      - name: person__draft_year
+        description: "Draft year from person record."
+        tests:
+          - not_null
+      - name: round_pick_number
+        description: "Pick in round."
+        tests:
+          - not_null
+      - name: pick_number
+        description: "Overall pick number."
+        tests:
+          - not_null
+
+      - name: person_full_name
+        description: "Player full name."
+        tests:
+          - not_null
+
+      - name: person_first_name
+        description: "Player first name."
+        tests:
+          - not_null
+
+      - name: person_last_name
+        description: "Player last name."
+        tests:
+          - not_null
+
+      - name: person_middle_name
+        description: "Player middle name."
+        # Nullable
+
+      - name: person_use_name
+        description: "Preferred first name."
+        # Nullable
+
+      - name: person_use_last_name
+        description: "Preferred last name."
+        # Nullable
+
+      - name: person_nick_name
+        description: "Nickname."
+        # Nullable
+
+      - name: person_boxscore_name
+        description: "Name as it appears on boxscores."
+        # Nullable
+
+      - name: person_name_slug
+        description: "URL-friendly name slug."
+        # Nullable
+
+      - name: person_name_title
+        description: "Name title (e.g. Jr., Sr.)."
+        # Nullable
+
+      - name: person_name_suffix
+        description: "Name suffix."
+        # Nullable
+
+      - name: person_name_matrilineal
+        description: "Matrilineal name."
+        # Nullable
+
+      - name: person_pronunciation
+        description: "Name pronunciation guide."
+        # Nullable
+
+      - name: person_birth_date
+        description: "Player date of birth."
+        # Nullable
+
+      - name: person_birth_city
+        description: "Birth city."
+        # Nullable
+
+      - name: person_birth_state_province
+        description: "Birth state or province."
+        # Nullable
+
+      - name: person_birth_country
+        description: "Birth country."
+        # Nullable
+
+      - name: person_death_date
+        description: "Date of death if applicable."
+        # Nullable
+
+      - name: person_death_city
+        description: "Death city."
+        # Nullable
+
+      - name: person_death_state_province
+        description: "Death state or province."
+        # Nullable
+
+      - name: person_death_country
+        description: "Death country."
+        # Nullable
+
+      - name: person_gender
+        description: "Gender."
+        # Nullable
+
+      - name: person_height
+        description: "Height string (e.g. 6'2\")."
+        # Nullable
+
+      - name: person_weight
+        description: "Weight in pounds."
+        # Nullable
+
+      - name: person_strike_zone_top
+        description: "Top of strike zone."
+        # Nullable
+
+      - name: person_strike_zone_bottom
+        description: "Bottom of strike zone."
+        # Nullable
+
+      - name: person_bat_side_code
+        description: "Batting side code (R/L/S)."
+        tests:
+          - accepted_values:
+              values: ['R', 'L', 'S']
+              config:
+                where: "person_bat_side_code is not null"
+
+      - name: person_bat_side_description
+        description: "Batting side description."
+        # Nullable
+
+      - name: person_pitch_hand_code
+        description: "Pitching hand code (R/L/S)."
+        tests:
+          - accepted_values:
+              values: ['R', 'L', 'S']
+              config:
+                where: "person_pitch_hand_code is not null"
+
+      - name: person_pitch_hand_description
+        description: "Pitching hand description."
+        # Nullable
+
+      - name: person_primary_number
+        description: "Jersey number."
+        # Nullable
+
+      - name: person_is_active
+        description: "Whether the player is currently active."
+        # Nullable
+
+      - name: person_is_player
+        description: "Whether the person is a player."
+        # Nullable
+
+      - name: person_is_verified
+        description: "Verification flag."
+        # Nullable
+
+      - name: person_mlb_debut_date
+        description: "MLB debut date."
+        # Nullable
+
+      - name: person_last_played_date
+        description: "Last played date."
+        # Nullable
+
+      - name: person_draft_year
+        description: "Draft year (cast to int)."
+        # Nullable
+
+      - name: person_primary_position_code
+        description: "Primary position code."
+        # Nullable
+
+      - name: person_primary_position_name
+        description: "Primary position name."
+        # Nullable
+
+      - name: person_primary_position_type
+        description: "Primary position type."
+        # Nullable
+
+      - name: person_primary_position_abbreviation
+        description: "Primary position abbreviation."
+        # Nullable
+
+      - name: home_city
+        description: "Player home city."
+        # Nullable
+
+      - name: home_state
+        description: "Player home state."
+        # Nullable
+
+      - name: home_country
+        description: "Player home country."
+        # Nullable
+
+      - name: person_link
+        description: "API link to player."
+        # Nullable
+
+      - name: headshot_link
+        description: "Link to player headshot."
+        # Nullable
+
+      - name: team_id
+        description: "Drafting team ID."
+        tests:
+          - not_null
+
+      - name: team_name
+        description: "Drafting team name."
+        tests:
+          - not_null
+
+      - name: team_link
+        description: "API link to team."
+        # Nullable
+
+      - name: team_all_star_status
+        description: "Team all-star status."
+        # Nullable
+
+      - name: team_spring_league_id
+        description: "Spring league ID."
+        # Nullable
+
+      - name: team_spring_league_name
+        description: "Spring league name."
+        # Nullable
+
+      - name: team_spring_league_abbreviation
+        description: "Spring league abbreviation."
+        # Nullable
+
+      - name: team_spring_league_link
+        description: "Spring league link."
+        # Nullable
+
+      - name: school_name
+        description: "School name."
+        # Nullable
+
+      - name: school_city
+        description: "School city."
+        # Nullable
+
+      - name: school_state
+        description: "School state."
+        # Nullable
+
+      - name: school_country
+        description: "School country."
+        # Nullable
+
+      - name: school_class
+        description: "School classification."
+        # Nullable
+
+      - name: draft_type_code
+        description: "Draft type code."
+        tests:
+          - not_null
+
+      - name: draft_type_description
+        description: "Draft type description."
+        tests:
+          - not_null
+
+      - name: source_dlt_id
+        description: "Source dlt row identifier."
+        tests:
+          - not_null
+          - unique
+
+  # ============================================================
+  # dim_game_status
+  # ============================================================
+  - name: dim_game_status
+    description: "Distinct game status combinations."
+    columns:
+      - name: game_status_key
+        description: "Surrogate key from coded_game_state."
+        tests:
+          - not_null
+      - name: status__coded_game_state
+        description: "Coded game state (e.g. C,D,F,R)."
+        tests:
+          - not_null
+
+      - name: status__abstract_game_state
+        description: "Abstract state (Final, Live, Preview)."
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - Final
+                - Live
+                - Preview
+      - name: status__detailed_state
+        description: "Detailed status description."
+        tests:
+          - not_null
+      - name: status__status_code
+        description: "Status code."
+        tests:
+          - not_null
+          - unique
+      - name: status__abstract_game_code
+        description: "Abstract game code."
+        tests:
+          - not_null
+
+  # ============================================================
+  # dim_game_type
+  # ============================================================
+  - name: dim_game_type
+    description: "Reference table of game type codes and names."
+    columns:
+      - name: game_type_key
+        description: "Surrogate key from game_type_code."
+        tests:
+          - not_null
+          - unique
+
+      - name: game_type_code
+        description: "Single-character game type code."
+        tests:
+          - not_null
+          - unique
+          - accepted_values:
+              values: ['R', 'S', 'P', 'D', 'L', 'W', 'F', 'A', 'E']
+
+      - name: game_type_name
+        description: "Human-readable game type name."
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - Regular Season
+                - Spring Training
+                - Postseason
+                - Division Series
+                - League Championship Series
+                - World Series
+                - Wild Card
+                - All-Star Game
+                - Exhibition
+                - Unknown
+
+  # ============================================================
+  # dim_games
+  # ============================================================
+  - name: dim_games
+    description: "One row per game with scores, teams, venue, and derived outcomes."
+    columns:
+      - name: game_pk
+        description: "Primary key – MLB game identifier."
+        tests:
+          - not_null
+          - unique
+
+      - name: season
+        description: "Season year."
+        tests:
+          - not_null
+
+      - name: game_type
+        description: "Game type code (R, S, P, etc.)."
+        tests:
+          - not_null
+
+      - name: game_datetime
+        description: "Full game datetime."
+        tests:
+          - not_null
+
+      - name: game_date
+        description: "Game date (date only)."
+        tests:
+          - not_null
+
+      - name: official_date
+        description: "Official MLB date for the game."
+        # May differ from game_date for late-night games
+
+      - name: abstract_game_state
+        description: "Abstract state (Final, Live, Preview)."
+        tests:
+          - not_null
+
+      - name: coded_game_state
+        description: "Coded game state."
+        tests:
+          - not_null
+
+      - name: detailed_state
+        description: "Detailed game state."
+        tests:
+          - not_null
+
+      - name: status_code
+        description: "Status code."
+        tests:
+          - not_null
+
+      - name: is_start_time_tbd
+        description: "Whether start time is TBD."
+        # Nullable
+
+      - name: home_team_id
+        description: "Home team ID."
+        tests:
+          - not_null
+
+      - name: home_team_name
+        description: "Home team name."
+        tests:
+          - not_null
+
+      - name: home_score
+        description: "Home team runs scored."
+        # Nullable for upcoming games
+
+      - name: home_is_winner
+        description: "Whether home team won."
+        # Nullable for upcoming games
+
+      - name: away_team_id
+        description: "Away team ID."
+        tests:
+          - not_null
+
+      - name: away_team_name
+        description: "Away team name."
+        tests:
+          - not_null
+
+      - name: away_score
+        description: "Away team runs scored."
+        # Nullable for upcoming games
+
+      - name: away_is_winner
+        description: "Whether away team won."
+        # Nullable for upcoming games
+
+      - name: venue_id
+        description: "Venue ID."
+        tests:
+          - not_null
+
+      - name: venue_name
+        description: "Venue name."
+        tests:
+          - not_null
+
+      - name: game_number
+        description: "Game number (for doubleheaders)."
+        tests:
+          - not_null
+
+      - name: double_header
+        description: "Doubleheader flag."
+        tests:
+          - not_null
+
+      - name: day_night
+        description: "Day or night game."
+        tests:
+          - accepted_values:
+              values: ['day', 'night']
+              config:
+                where: "day_night is not null"
+
+      - name: scheduled_innings
+        description: "Number of scheduled innings."
+        # Nullable
+
+      - name: games_in_series
+        description: "Total games in the series."
+        # Nullable
+
+      - name: series_game_number
+        description: "Game number within the series."
+        # Nullable
+
+      - name: series_description
+        description: "Description of the series."
+        # Nullable
+
+      - name: is_tie
+        description: "Whether the game ended in a tie."
+        # Nullable
+
+      - name: public_facing
+        description: "Whether the game is public-facing."
+        # Nullable
+
+      - name: load_id
+        description: "dlt load identifier."
+        tests:
+          - not_null
+
+      - name: _dlt_id
+        description: "dlt row identifier."
+        tests:
+          - not_null
+          - unique
+
+      - name: winning_team_id
+        description: "Derived: team ID of the winner."
+        # Nullable when game not final or tied
+
+      - name: losing_team_id
+        description: "Derived: team ID of the loser."
+        # Nullable when game not final or tied
+
+      - name: run_diff
+        description: "Derived: home_score minus away_score."
+        # Nullable when scores unavailable
+
+      - name: is_final
+        description: "Derived: 1 if detailed_state is Final."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: game_type_desc
+        description: "Derived: human-readable game type."
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - Regular Season
+                - Spring Training
+                - Postseason
+                - Other
+
+  # ============================================================
+  # dim_pitch_type
+  # ============================================================
+  - name: dim_pitch_type
+    description: "Distinct pitch types from Statcast play events."
+    columns:
+      - name: pitch_type_code
+        description: "Two-character pitch type code."
+        tests:
+          - not_null
+          - unique
+
+      - name: pitch_type_description
+        description: "Full pitch type description."
+        tests:
+          - not_null
+
+      - name: pitch_trail_color
+        description: "Hex color used for pitch trail visualizations."
+        # Nullable
+
+      - name: pitch_category
+        description: "Pitch grouping: Fastball, Breaking, Offspeed, or Other."
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - Fastball
+                - Breaking
+                - Offspeed
+                - Other
+
+  # ============================================================
+  # dim_player
+  # ============================================================
+  - name: dim_player
+    description: "SCD Type 2 player dimension with current/historical records."
+    columns:
+      - name: player_id
+        description: "MLB player ID (natural key; not unique due to SCD2)."
+        tests:
+          - not_null
+
+      - name: full_name
+        description: "Player full name."
+        tests:
+          - not_null
+
+
+      - name: primary_number
+        description: "Jersey number."
+        # Nullable
+
+      - name: primary_position_code
+        description: "Primary position code."
+        # Nullable
+
+      - name: primary_position_name
+        description: "Primary position name."
+        # Nullable
+
+      - name: primary_position_type
+        description: "Primary position type."
+        # Nullable
+
+      - name: primary_position_abbreviation
+        description: "Primary position abbreviation."
+        # Nullable
+
+      - name: effective_date
+        description: "SCD2 effective date."
+        tests:
+          - not_null
+
+      - name: end_date
+        description: "SCD2 end date (NULL for current records)."
+        # Nullable for current records
+
+      - name: is_current
+        description: "1 for current record, 0 for historical."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+    
+  # ============================================================
+  # dim_position
+  # ============================================================
+  - name: dim_position
+    description: "Distinct positions from players, stats, and rosters."
+    columns:
+      - name: position_key
+        description: "Surrogate key from position_code."
+        tests:
+          - not_null
+          - unique
+
+      - name: position_code
+        description: "Position code (natural key)."
+        tests:
+          - not_null
+          - unique
+
+      - name: position_name
+        description: "Full position name."
+        tests:
+          - not_null
+
+      - name: position_type
+        description: "Position type (Pitcher, Hitter, etc.)."
+        tests:
+          - not_null
+
+      - name: position_abbreviation
+        description: "Position abbreviation."
+        tests:
+          - not_null
+
+  # ============================================================
+  # dim_school
+  # ============================================================
+  - name: dim_school
+    description: "Schools from which players were drafted."
+    columns:
+      - name: school_key
+        description: "Surrogate key from school name."
+        tests:
+          - not_null
+          - unique
+
+      - name: school__name
+        description: "School name (natural key)."
+        tests:
+          - not_null
+          - unique
+
+      - name: school__city
+        description: "School city."
+        # Nullable
+
+      - name: school__state
+        description: "School state."
+        # Nullable
+
+      - name: school__country
+        description: "School country."
+        # Nullable
+
+      - name: school__school_class
+        description: "School class/classification."
+        # Nullable
+
+      - name: school_type
+        description: "School type from lookup (e.g. HS, College, JC)."
+        # Nullable – depends on lookup match
+
+      - name: classified_by
+        description: "How the school type was classified."
+        # Nullable
+
+  # ============================================================
+  # dim_season
+  # ============================================================
+  - name: dim_season
+    description: "One row per MLB season with key dates."
+    columns:
+      - name: season_key
+        description: "Surrogate key from season."
+        tests:
+          - not_null
+          - unique
+
+      - name: season
+        description: "Season year (natural key)."
+        tests:
+          - not_null
+          - unique
+
+      - name: season_id
+        description: "Season identifier."
+        tests:
+          - not_null
+
+      - name: has_wildcard
+        description: "Whether the season had a wild card."
+        # Nullable
+
+      - name: pre_season_start_date
+        description: "Pre-season start date."
+        # Nullable
+
+      - name: pre_season_end_date
+        description: "Pre-season end date."
+        # Nullable
+
+      - name: spring_start_date
+        description: "Spring training start date."
+        # Nullable
+
+      - name: spring_end_date
+        description: "Spring training end date."
+        # Nullable
+
+      - name: regular_season_start_date
+        description: "Regular season opening day."
+        tests:
+          - not_null
+
+      - name: last_date1st_half
+        description: "Last date of the first half."
+        # Nullable
+
+      - name: all_star_date
+        description: "All-Star Game date."
+        # Nullable
+
+      - name: first_date2nd_half
+        description: "First date of the second half."
+        # Nullable
+
+      - name: regular_season_end_date
+        description: "Regular season final day."
+        tests:
+          - not_null
+
+      - name: post_season_start_date
+        description: "Postseason start date."
+        # Nullable
+
+      - name: post_season_end_date
+        description: "Postseason end date."
+        # Nullable
+
+      - name: season_start_date
+        description: "Overall season start date."
+        # Nullable
+
+      - name: season_end_date
+        description: "Overall season end date."
+        # Nullable
+
+      - name: offseason_start_date
+        description: "Offseason start date."
+        # Nullable
+
+      - name: off_season_end_date
+        description: "Offseason end date."
+        # Nullable
+
+      - name: qualifier_plate_appearances
+        description: "Minimum plate appearances for batting title."
+        # Nullable
+
+      - name: qualifier_outs_pitched
+        description: "Minimum outs pitched to qualify."
+        # Nullable
+
+      - name: regular_season_days
+        description: "Derived: number of days in the regular season."
+        tests:
+          - not_null
+
+  # ============================================================
+  # dim_team
+  # ============================================================
+  - name: dim_team
+    description: "Team dimension keyed by team + season."
+    columns:
+      - name: team_key
+        description: "Surrogate key from team_id + season."
+        tests:
+          - not_null
+          - unique
+
+      - name: team_id
+        description: "MLB team ID."
+        tests:
+          - not_null
+
+      - name: team_name
+        description: "Full team name."
+        tests:
+          - not_null
+
+      - name: team_code
+        description: "Short team code."
+        tests:
+          - not_null
+
+      - name: file_code
+        description: "File code used in MLB systems."
+        # Nullable
+
+      - name: abbreviation
+        description: "Team abbreviation (e.g. NYY, LAD)."
+        tests:
+          - not_null
+
+      - name: location_name
+        description: "City/location name."
+        tests:
+          - not_null
+
+      - name: franchise_name
+        description: "Franchise name."
+        tests:
+          - not_null
+
+      - name: club_name
+        description: "Club name."
+        tests:
+          - not_null
+
+      - name: short_name
+        description: "Short display name."
+        tests:
+          - not_null
+
+      - name: league_id
+        description: "League ID (AL/NL)."
+        tests:
+          - not_null
+
+      - name: league_name
+        description: "League name."
+        tests:
+          - not_null
+
+      - name: division_id
+        description: "Division ID."
+        tests:
+          - not_null
+
+      - name: division_name
+        description: "Division name."
+        tests:
+          - not_null
+
+      - name: sport_id
+        description: "Sport ID."
+        tests:
+          - not_null
+
+      - name: sport_name
+        description: "Sport name."
+        tests:
+          - not_null
+
+      - name: venue_id
+        description: "Home venue ID."
+        # Nullable
+
+      - name: spring_venue_id
+        description: "Spring training venue ID."
+        # Nullable
+
+      - name: spring_league_id
+        description: "Spring league ID."
+        # Nullable
+
+      - name: spring_league_name
+        description: "Spring league name."
+        # Nullable
+
+      - name: spring_league_abbreviation
+        description: "Spring league abbreviation."
+        # Nullable
+
+      - name: all_star_status
+        description: "All-star status flag."
+        # Nullable
+
+      - name: is_active
+        description: "Whether the team is active."
+        # Nullable
+
+      - name: first_year_of_play
+        description: "First year the team played."
+        # Nullable
+
+      - name: season
+        description: "Season year this record applies to."
+        tests:
+          - not_null
+
+      - name: created_at
+        description: "Row creation timestamp."
+        tests:
+          - not_null
+
+      - name: updated_at
+        description: "Row update timestamp."
+        tests:
+          - not_null
+
+  # ============================================================
+  # dim_venue
+  # ============================================================
+  - name: dim_venue
+    description: "MLB venues/stadiums."
+    columns:
+      - name: venue_key
+        description: "Surrogate key from venue_id."
+        tests:
+          - not_null
+          - unique
+
+      - name: venue_id
+        description: "MLB venue ID (natural key)."
+        tests:
+          - not_null
+          - unique
+
+      - name: venue_name
+        description: "Venue name."
+        tests:
+          - not_null
+
+      - name: venue_link
+        description: "API link to venue."
+        # Nullable
+
+      - name: location_name
+        description: "City/location name."
+        # Nullable
+
+      - name: first_year_of_play
+        description: "First year the venue was used."
+        # Nullable
+
+      - name: spring_venue_id
+        description: "Associated spring training venue ID."
+        # Nullable
+
+      - name: spring_venue_link
+        description: "API link to spring venue."
+        # Nullable
+
+  # ============================================================
+  # dim_zone
+  # ============================================================
+  - name: dim_zone
+    description: "Statcast strike zone grid – zones 1-9 (strike zone) and 11-14 (out of zone)."
+    columns:
+      - name: zone_id
+        description: "Zone number."
+        tests:
+          - not_null
+          - unique
+          - accepted_values:
+              values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14]
+
+      - name: zone_description
+        description: "Zone label."
+        tests:
+          - not_null
+
+      - name: is_in_zone
+        description: "1 if inside the strike zone, 0 if outside."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: zone_region
+        description: "Zone region grouping."
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - Upper
+                - Middle
+                - Heart
+                - Lower
+                - Chase-Up
+                - Chase-Down
