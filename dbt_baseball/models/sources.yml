@@ -47,9 +47,8 @@ sources:
             data_tests:
               - not_null
               - relationships:
-                  arguments:
-                    to: source('dw', 'games')
-                    field: game_pk
+                  to: source('dw', 'games')
+                  field: game_pk
           - name: at_bat_index
             description: Sequential at-bat number within the game, 0-based (NOT NULL per DDL).
             data_tests:
@@ -259,9 +258,8 @@ sources:
             data_tests:
               - not_null
               - relationships:
-                  arguments:
-                    to: source('dw', 'teams')
-                    field: id
+                  to: source('dw', 'teams')
+                  field: id
           - name: teams__home__team__name
             description: Full name of the home team.
           - name: teams__home__score
@@ -279,9 +277,8 @@ sources:
             data_tests:
               - not_null
               - relationships:
-                  arguments:
-                    to: source('dw', 'teams')
-                    field: id
+                  to: source('dw', 'teams')
+                  field: id
           - name: teams__away__team__name
             description: Full name of the away team.
           - name: teams__away__score
@@ -337,9 +334,8 @@ sources:
               - not_null
               - unique
               - relationships:
-                  arguments:
-                    to: source('dw', 'games')
-                    field: game_pk
+                  to: source('dw', 'games')
+                  field: game_pk
           - name: _dlt_id
             description: dlt surrogate row key (NOT NULL per DDL).
             data_tests:
@@ -558,9 +554,8 @@ sources:
             data_tests:
               - not_null
               - relationships:
-                  arguments:
-                    to: source('dw', 'games')
-                    field: game_pk
+                  to: source('dw', 'games')
+                  field: game_pk
           - name: official_type
             description: Position worked — e.g. Home Plate, First Base (NOT NULL per DDL).
             data_tests:

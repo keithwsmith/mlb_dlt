@@ -407,6 +407,9 @@ def games_resource(start_year: int = None, end_year: int = None):
                 game_type = game.get("gameType", "")
                 if game_type in ("E", "A"):
                     continue
+                detailed_state = game.get("status", {}).get("detailedState", "")
+                if detailed_state in ('Cancelled', 'Postponed'):
+                    continue
                 status = game.get("status", {}).get("abstractGameState", "")
                 if status == "Final":
                     yield game
@@ -618,6 +621,21 @@ def get_game_pks_from_dw(start_year, end_year):
     print(f"[game_details] Found {len(rows)} eligible games in dw.games "
           f"for seasons {start_year}–{end_year}")
     return [{"gamePk": r[0]} for r in rows]
+	
+
+def get_all_game_pks():
+    conn = pyodbc.connect(DW_CONNECTION_STRING, timeout=10)
+    cursor = conn.cursor()
+    # Only fetch game_pks that exist in dw.games (enforces referential integrity
+    # at load time — prevents game_details orphans from the start).
+    # games have to be Final and Not game_type E,A
+    cursor.execute("""
+    SELECT game_pk FROM dw.games
+""")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"gamePk": r[0]} for r in rows]
+	
 
 # ----------------------------
 # Game details resource
@@ -788,6 +806,9 @@ def play_events_resource(start_year: int = None, end_year: int = None):
                 for game in date_entry.get("games", []):
                     game_pk = game.get("gamePk")
                     status  = game.get("status", {}).get("abstractGameState")
+                    game_type = game.get("gameType", "")
+                    if game_type in ("E", "A"):
+                        continue
                     if game_pk and status == "Final":
                         all_games.append((year, game_pk))
 
