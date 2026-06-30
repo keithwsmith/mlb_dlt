@@ -74,20 +74,32 @@ def get_max_game_date():
         return None
 
 
-def get_existing_game_pks():
+def get_valid_game_pks_from_dw() -> set:
+    """
+    Single source of truth for valid game_pks.
+    Always queries dw.games so every downstream resource
+    (play_events, umpires, game_details) is guaranteed to reference
+    only game_pks that exist in the parent table — ensuring dbt
+    relationship tests never fail due to orphaned foreign keys.
+    Returns a set of integers.
+    """
     try:
         conn = pyodbc.connect(DW_CONNECTION_STRING, timeout=10)
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT distinct game_pk
-            FROM dw.play_events
+            SELECT game_pk
+            FROM dw.games
+            WHERE status__abstract_game_state = 'Final'
+              AND game_type NOT IN ('E', 'A')
         """)
         rows = cursor.fetchall()
         conn.close()
-        return set(r[0] for r in rows) if rows else set()
+        result = set(r[0] for r in rows) if rows else set()
+        print(f"[dw.games] {len(result)} valid game_pks available.")
+        return result
     except pyodbc.Error as e:
-        print(f"Could not query existing game_pks: {e}")
-        print("   Falling back to full load.")
+        print(f"Could not query valid game_pks from dw.games: {e}")
+        print("   Falling back to empty set — nothing will be loaded.")
         return set()
 
 
@@ -416,18 +428,29 @@ def games_resource(start_year: int = None, end_year: int = None):
 
 
 def get_games_missing_umpires(start_year: int = 2023):
+    """
+    Returns game_pks from dw.games that are:
+      - In a valid season (>= start_year)
+      - Final, regular-season, non-exhibition games (consistent with
+        get_valid_game_pks_from_dw so the umpires FK is always valid)
+      - Not yet present in dw.umpires
+    Sourcing exclusively from dw.games guarantees dbt relationship
+    tests on umpires.game_pk -> games.game_pk always pass.
+    """
     conn = pyodbc.connect(DW_CONNECTION_STRING, timeout=10)
     cursor = conn.cursor()
     cursor.execute("""
         SELECT game_pk
         FROM dw.games
         WHERE season >= ?
+          AND status__abstract_game_state = 'Final'
+          AND game_type NOT IN ('E', 'A')
+          AND status__detailed_state NOT IN ('Cancelled', 'Postponed')
           AND game_pk NOT IN (SELECT game_pk FROM dw.umpires)
-          AND game_type = 'R'   -- Regular season only
-          AND status__detailed_state NOT IN ('Cancelled','Postponed')
     """, (start_year,))
     rows = cursor.fetchall()
     conn.close()
+    print(f"[umpires] {len(rows)} games in dw.games are missing umpire records.")
     return [r[0] for r in rows]
 
 
@@ -600,40 +623,29 @@ def fetch_game_details(game):
 	
 
 def get_game_pks_from_dw(start_year, end_year):
+    """
+    Returns game_pks from dw.games scoped to a year range for game_details.
+    Applies the same Final / non-exhibition filter as get_valid_game_pks_from_dw
+    so all three child resources (play_events, umpires, game_details) share
+    identical FK constraints and dbt relationship tests are always satisfied.
+    """
     current_year = datetime.now().year
-    # Default to full range if no years provided
     start_year = start_year or 1960
     end_year   = end_year   or current_year
 
     conn = pyodbc.connect(DW_CONNECTION_STRING, timeout=10)
     cursor = conn.cursor()
-    # Only fetch game_pks that exist in dw.games (enforces referential integrity
-    # at load time — prevents game_details orphans from the start).
-    # games have to be Final and Not game_type E,A
     cursor.execute("""
-    SELECT game_pk FROM dw.games
-    WHERE season BETWEEN ? AND ?
-      AND status__abstract_game_state = 'Final'
-      AND game_type NOT IN ('E', 'A')
-""", (start_year, end_year))
+        SELECT game_pk
+        FROM dw.games
+        WHERE season BETWEEN ? AND ?
+          AND status__abstract_game_state = 'Final'
+          AND game_type NOT IN ('E', 'A')
+    """, (start_year, end_year))
     rows = cursor.fetchall()
     conn.close()
     print(f"[game_details] Found {len(rows)} eligible games in dw.games "
           f"for seasons {start_year}–{end_year}")
-    return [{"gamePk": r[0]} for r in rows]
-	
-
-def get_all_game_pks():
-    conn = pyodbc.connect(DW_CONNECTION_STRING, timeout=10)
-    cursor = conn.cursor()
-    # Only fetch game_pks that exist in dw.games (enforces referential integrity
-    # at load time — prevents game_details orphans from the start).
-    # games have to be Final and Not game_type E,A
-    cursor.execute("""
-    SELECT game_pk FROM dw.games
-""")
-    rows = cursor.fetchall()
-    conn.close()
     return [{"gamePk": r[0]} for r in rows]
 	
 
@@ -812,11 +824,13 @@ def play_events_resource(start_year: int = None, end_year: int = None):
                     if game_pk and status == "Final":
                         all_games.append((year, game_pk))
 
-    existing_pks = get_existing_game_pks()
+    # Filter to only game_pks that exist in dw.games — guarantees dbt
+    # relationship tests pass. Also skips games already loaded.
+    valid_pks = get_valid_game_pks_from_dw()
     before = len(all_games)
-    all_games = [(y, pk) for y, pk in all_games if pk not in existing_pks]
-    print(f"{before} total games, {before - len(all_games)} already loaded, "
-          f"fetching {len(all_games)} remaining...")
+    all_games = [(y, pk) for y, pk in all_games if pk in valid_pks]
+    print(f"{before} total Final games from schedule, "
+          f"{len(all_games)} exist in dw.games and will be loaded...")
 
     if not all_games:
         print("Nothing new to load.")

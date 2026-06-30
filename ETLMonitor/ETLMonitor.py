@@ -23,7 +23,86 @@ from datetime import datetime, timedelta
 import json
 import threading
 
+
+def _parse_dbt_node_id(node_id):
+    """
+    Parse a dbt test node_id into structured fields.
+    dbt node IDs follow the pattern:
+      test.<package>.<test_prefix>_<model>_<column>[__<extra_detail>]
+    where __ (double underscore) separates the main model/column from
+    relationship targets, accepted values, etc.
+    """
+    import re as _re
+    if not node_id:
+        return {'test_type': '', 'model': '', 'column': '', 'detail': '', 'raw': ''}
+
+    raw = _re.sub(r'^test\.[^.]+\.', '', node_id)
+
+    TEST_PREFIXES = [
+        ('source_relationships_', 'relationship'),
+        ('source_not_null_',      'not_null'),
+        ('source_unique_',        'unique'),
+        ('source_accepted_values_','accepted_values'),
+        ('relationships_',        'relationship'),
+        ('not_null_',             'not_null'),
+        ('unique_',               'unique'),
+        ('accepted_values_',      'accepted_values'),
+        ('dbt_expectations_',     'expectation'),
+        ('dbt_utils_',            'dbt_utils'),
+    ]
+
+    test_type = 'custom'
+    remainder = raw
+    for prefix, label in TEST_PREFIXES:
+        if raw.startswith(prefix):
+            test_type = label
+            remainder = raw[len(prefix):]
+            break
+
+    # __ separates the model_column portion from the reference/detail suffix
+    double_parts = remainder.split('__')
+    main_part    = double_parts[0]
+    detail_parts = double_parts[1:]
+    detail = ' → '.join(p.strip('_') for p in detail_parts if p.strip('_'))
+
+    # Split model from column: compound column names (game_pk, player_id,
+    # division_name) are matched first; otherwise take the last single token.
+    tokens = main_part.split('_')
+    TWO_TOKEN_COLS = {
+        'game_pk', 'player_id', 'team_id', 'division_name', 'division_id',
+        'league_id', 'league_name', 'start_time', 'end_time', 'run_id',
+        'model_name', 'model_layer', 'record_count', 'node_id',
+        'full_name', 'first_name', 'last_name', 'birth_date',
+        'inning_number', 'pitch_type', 'hit_type', 'event_type',
+        'at_bat', 'home_team', 'away_team', 'home_score', 'away_score',
+        'game_date', 'game_type', 'season_year', 'bat_side', 'pitch_hand',
+        'official_id', 'official_type', 'innings_pitched', 'earned_runs',
+    }
+    if len(tokens) >= 3:
+        two_col = '_'.join(tokens[-2:])
+        if two_col in TWO_TOKEN_COLS:
+            model, column = '_'.join(tokens[:-2]), two_col
+        else:
+            model, column = '_'.join(tokens[:-1]), tokens[-1]
+    elif len(tokens) == 2:
+        model, column = tokens[0], tokens[1]
+    else:
+        model, column = main_part, ''
+
+    return {'test_type': test_type, 'model': model,
+            'column': column, 'detail': detail, 'raw': node_id}
+
+
 app = Flask(__name__)
+
+# ── Jinja2 custom filter: parse dbt node_id / test_name into structured dict ──
+@app.template_filter('parse_test_name')
+def _jinja_parse_test_name(value):
+    """Expose _parse_dbt_node_id to Jinja2 templates as the parse_test_name filter."""
+    try:
+        return _parse_dbt_node_id(value or '')
+    except Exception:
+        return {'test_type': '', 'model': '', 'column': '', 'detail': '', 'raw': value or ''}
 
 # ── DB CONNECTION ──────────────────────────────────────────────────────────────
 
@@ -319,7 +398,8 @@ def failure_rates(days=7):
             100.0 * SUM(CASE WHEN status IN ('failed','failure','error') THEN 1 ELSE 0 END)
             / NULLIF(COUNT(*), 0)
         AS DECIMAL(5,2)) AS failure_rate_pct,
-        MAX(CASE WHEN status IN ('failed','failure','error') THEN start_time END) AS last_failure
+        MAX(CASE WHEN status IN ('failed','failure','error') THEN start_time END) AS last_failure,
+        MAX(CASE WHEN status NOT IN ('failed','failure','error') THEN start_time END) AS last_ran
     FROM dbo.pipeline
     WHERE start_time >= DATEADD(day, -{days}, SYSUTCDATETIME())
     GROUP BY model_name
@@ -329,6 +409,8 @@ def failure_rates(days=7):
     for r in rows:
         if r.get('last_failure'):
             r['last_failure'] = str(r['last_failure'])[:19]
+        if r.get('last_ran'):
+            r['last_ran'] = str(r['last_ran'])[:19]
     return rows
 
 
@@ -430,55 +512,50 @@ def dbt_model_executions(invocation_id=None, limit=100):
         return []
 
 
+
 def dbt_test_executions(invocation_id=None, limit=200):
     try:
         inv_id = invocation_id or _latest_invocation_id()
-        if inv_id:
-            sql = f"""
+        _sql = f"""
             SELECT TOP {limit}
                 COALESCE(t.name, te.node_id) AS test_name,
                 te.status, te.failures, te.message, te.total_node_runtime,
-                te.rows_affected, te.node_id, te.command_invocation_id
+                te.rows_affected, te.node_id, te.command_invocation_id,
+                te.run_started_at
             FROM silver.test_executions te
             LEFT JOIN silver.tests t
                    ON te.command_invocation_id = t.command_invocation_id
                   AND te.node_id = t.node_id
-            WHERE te.command_invocation_id = ?
+            WHERE te.command_invocation_id = {{inv_clause}}
             ORDER BY
                 CASE WHEN te.status IN ('fail','error') THEN 0 ELSE 1 END,
                 COALESCE(te.failures, 0) DESC,
                 te.total_node_runtime DESC
-            """
-            rows = query(sql, [inv_id])
+        """
+        if inv_id:
+            rows = query(_sql.format(inv_clause='?'), [inv_id])
         else:
             rows = []
         if not rows:
-            sql_fallback = f"""
-            SELECT TOP {limit}
-                COALESCE(t.name, te.node_id) AS test_name,
-                te.status, te.failures, te.message, te.total_node_runtime,
-                te.rows_affected, te.node_id, te.command_invocation_id
-            FROM silver.test_executions te
-            LEFT JOIN silver.tests t
-                   ON te.command_invocation_id = t.command_invocation_id
-                  AND te.node_id = t.node_id
-            WHERE te.command_invocation_id = (
+            rows = query(_sql.format(inv_clause="""(
                 SELECT TOP 1 command_invocation_id
                 FROM silver.test_executions
                 ORDER BY run_started_at DESC
-            )
-            ORDER BY
-                CASE WHEN te.status IN ('fail','error') THEN 0 ELSE 1 END,
-                COALESCE(te.failures, 0) DESC,
-                te.total_node_runtime DESC
-            """
-            rows = query(sql_fallback)
+            )"""))
         for r in rows:
             failures = r.get('failures') or 0
             status   = r.get('status') or ''
             r['status_color'] = (
                 'danger' if status in ('fail', 'error') or failures > 0 else 'success'
             )
+            if r.get('run_started_at'):
+                r['run_started_at'] = str(r['run_started_at'])[:19]
+            # Parse node_id into readable fields
+            parsed = _parse_dbt_node_id(r.get('node_id') or r.get('test_name') or '')
+            r['parsed_test_type'] = parsed['test_type']
+            r['parsed_model']     = parsed['model']
+            r['parsed_column']    = parsed['column']
+            r['parsed_detail']    = parsed['detail']
         return rows
     except Exception as e:
         print(f"  [dbt_test_executions] {e}")
@@ -982,7 +1059,7 @@ TEMPLATE = r"""
             <div class="card-header"><i class="bi bi-bar-chart me-2"></i>Last 7 Days</div>
             <div class="card-body p-0">
               <table class="table table-sm mb-0">
-                <thead><tr><th>Model</th><th>Runs</th><th>Failures</th><th>Rate %</th><th>Last Failure</th></tr></thead>
+                <thead><tr><th>Model</th><th>Runs</th><th>Failures</th><th>Rate %</th><th>Last Failure</th><th>Last Ran</th></tr></thead>
                 <tbody>
                 {% for r in fr7 %}
                 <tr class="{{ 'table-danger' if r.failure_rate_pct and r.failure_rate_pct > 0 else '' }}">
@@ -998,9 +1075,10 @@ TEMPLATE = r"""
                     </div>
                   </td>
                   <td><small class="{{ 'text-danger' if r.last_failure else 'text-muted' }}">{{ r.last_failure or '—' }}</small></td>
+                  <td><small class="{{ 'text-success' if r.last_ran else 'text-muted' }}">{{ r.last_ran or '—' }}</small></td>
                 </tr>
                 {% else %}
-                <tr><td colspan="5" class="text-center text-muted">No data</td></tr>
+                <tr><td colspan="6" class="text-center text-muted">No data</td></tr>
                 {% endfor %}
                 </tbody>
               </table>
@@ -1012,7 +1090,7 @@ TEMPLATE = r"""
             <div class="card-header"><i class="bi bi-bar-chart me-2"></i>Last 30 Days</div>
             <div class="card-body p-0">
               <table class="table table-sm mb-0">
-                <thead><tr><th>Model</th><th>Runs</th><th>Failures</th><th>Rate %</th><th>Last Failure</th></tr></thead>
+                <thead><tr><th>Model</th><th>Runs</th><th>Failures</th><th>Rate %</th><th>Last Failure</th><th>Last Ran</th></tr></thead>
                 <tbody>
                 {% for r in fr30 %}
                 <tr class="{{ 'table-danger' if r.failure_rate_pct and r.failure_rate_pct > 0 else '' }}">
@@ -1028,9 +1106,10 @@ TEMPLATE = r"""
                     </div>
                   </td>
                   <td><small class="{{ 'text-danger' if r.last_failure else 'text-muted' }}">{{ r.last_failure or '—' }}</small></td>
+                  <td><small class="{{ 'text-success' if r.last_ran else 'text-muted' }}">{{ r.last_ran or '—' }}</small></td>
                 </tr>
                 {% else %}
-                <tr><td colspan="5" class="text-center text-muted">No data</td></tr>
+                <tr><td colspan="6" class="text-center text-muted">No data</td></tr>
                 {% endfor %}
                 </tbody>
               </table>
@@ -1252,25 +1331,110 @@ TEMPLATE = r"""
     <!-- ── DBT TESTS ── -->
     <div class="tab-pane fade" id="tab-tests">
       <div class="card">
-        <div class="card-header"><i class="bi bi-check2-circle me-2"></i>Latest dbt Test Executions</div>
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-check2-circle me-2"></i>Latest dbt Test Executions</span>
+          {% if dbt_tests %}
+          <span class="text-muted" style="font-size:.8rem">
+            Run: {{ dbt_tests[0].run_started_at or '—' }}
+            &nbsp;|&nbsp;
+            <span class="text-danger">{{ dbt_tests | selectattr('status_color','eq','danger') | list | length }} failed</span>
+            &nbsp;/&nbsp;
+            {{ dbt_tests | length }} total
+          </span>
+          {% endif %}
+        </div>
+        <!-- Filter pills -->
+        <div class="px-3 pt-3 pb-2 d-flex flex-wrap gap-2 align-items-center">
+          <span style="font-size:.8rem;color:#9aa0b4">Filter:</span>
+          <span class="filter-pill active" onclick="filterTests('all',this)">All</span>
+          <span class="filter-pill" onclick="filterTests('fail',this)">
+            <i class="bi bi-x-circle me-1"></i>Failures only
+          </span>
+          <span class="filter-pill" onclick="filterTests('pass',this)">
+            <i class="bi bi-check-circle me-1"></i>Passing only
+          </span>
+        </div>
         <div class="card-body p-0">
           <div class="table-responsive">
-          <table class="table table-sm mb-0">
+          <table class="table table-sm mb-0" id="dbtTestsTable">
             <thead><tr>
-              <th>Test</th><th>Status</th><th>Failures</th><th>Rows Affected</th><th>Runtime (s)</th><th>Message</th>
+              <th>Model</th>
+              <th>Column</th>
+              <th>Test Type</th>
+              <th>Status</th>
+              <th>Failures</th>
+              <th>Runtime (s)</th>
+              <th>Detail / Ref</th>
+              <th>Message</th>
             </tr></thead>
             <tbody>
             {% for r in dbt_tests %}
-            <tr class="{{ 'table-danger' if r.status_color == 'danger' else '' }}">
-              <td>{{ r.test_name or r.node_id or '—' }}</td>
-              <td>{% if r.status_color == 'danger' %}<span class="badge bg-danger">{{ r.status }}</span>{% elif r.status_color == 'warning' %}<span class="badge bg-warning text-dark">{{ r.status }}</span>{% else %}<span class="badge bg-success">{{ r.status }}</span>{% endif %}</td>
-              <td>{{ r.failures if r.failures is not none else '—' }}</td>
-              <td>{{ r.rows_affected if r.rows_affected is not none else '—' }}</td>
-              <td>{{ '%.2f'|format(r.total_node_runtime) if r.total_node_runtime is not none else '—' }}</td>
-              <td><small class="text-muted">{{ (r.message or '')[:100] }}</small></td>
+            <tr class="{{ 'table-danger' if r.status_color == 'danger' else '' }}"
+                data-test-status="{{ r.status_color }}">
+              <td>
+                <strong style="font-size:.85rem">{{ r.parsed_model or '—' }}</strong>
+                {% if not r.parsed_model %}
+                <small class="text-muted d-block" style="font-size:.7rem;word-break:break-all">{{ r.node_id }}</small>
+                {% endif %}
+              </td>
+              <td>
+                {% if r.parsed_column %}
+                  <code style="font-size:.8rem;color:#a0c4ff">{{ r.parsed_column }}</code>
+                {% else %}
+                  <span class="text-muted">—</span>
+                {% endif %}
+              </td>
+              <td>
+                {% set tt = r.parsed_test_type %}
+                {% if tt == 'not_null' %}
+                  <span class="lbadge" style="background:#1e2f4a;color:#60a5fa">not_null</span>
+                {% elif tt == 'unique' %}
+                  <span class="lbadge" style="background:#1e4838;color:#4ade80">unique</span>
+                {% elif tt == 'relationship' %}
+                  <span class="lbadge" style="background:#3b1f00;color:#fb923c">relationship</span>
+                {% elif tt == 'accepted_values' %}
+                  <span class="lbadge" style="background:#2d1f4a;color:#c084fc">accepted_values</span>
+                {% elif tt == 'expectation' %}
+                  <span class="lbadge" style="background:#1a3535;color:#2dd4bf">expectation</span>
+                {% else %}
+                  <span class="lbadge" style="background:#2d3142;color:#9aa0b4">{{ tt or 'custom' }}</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if r.status_color == 'danger' %}
+                  <span class="badge bg-danger"><i class="bi bi-x-circle me-1"></i>{{ r.status }}</span>
+                {% else %}
+                  <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>{{ r.status }}</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if r.failures and r.failures > 0 %}
+                  <span class="badge bg-danger">{{ '{:,}'.format(r.failures) }}</span>
+                {% else %}
+                  <span class="text-muted">{{ r.failures if r.failures is not none else '—' }}</span>
+                {% endif %}
+              </td>
+              <td>{{ '%.3f'|format(r.total_node_runtime) if r.total_node_runtime is not none else '—' }}</td>
+              <td>
+                {% if r.parsed_detail %}
+                  <small class="text-muted" style="font-size:.75rem">{{ r.parsed_detail }}</small>
+                {% else %}
+                  <span class="text-muted">—</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if r.message %}
+                  <small class="{{ 'text-danger' if r.status_color == 'danger' else 'text-muted' }}"
+                         style="font-size:.75rem">
+                    {{ (r.message or '')[:120] }}
+                  </small>
+                {% else %}
+                  <span class="text-muted">—</span>
+                {% endif %}
+              </td>
             </tr>
             {% else %}
-            <tr><td colspan="6" class="text-center text-muted py-4">No dbt test executions found.</td></tr>
+            <tr><td colspan="8" class="text-center text-muted py-4">No dbt test executions found.</td></tr>
             {% endfor %}
             </tbody>
           </table>
@@ -1287,21 +1451,66 @@ TEMPLATE = r"""
           <div class="table-responsive">
           <table class="table table-sm mb-0">
             <thead><tr>
-              <th>Table</th><th>Model</th><th>Test</th><th>Type</th>
-              <th>Failures</th><th>Run At</th><th>Result</th>
+              <th>Model</th><th>Column</th><th>Test Type</th>
+              <th>Failures</th><th>Run At</th><th>Detail / SQL</th>
             </tr></thead>
             <tbody>
             {% for r in test_sql %}
+            {# Parse the test_name into readable parts #}
+            {% set raw = r.test_name or r.table_name or '' %}
+            {% set parsed = raw | parse_test_name %}
             <tr class="{{ 'table-danger' if r.failure_count and r.failure_count > 0 else '' }}">
-              <td>{{ r.table_name }}</td><td>{{ r.model_name }}</td>
-              <td>{{ r.test_name }}</td>
-              <td><span class="badge-layer">{{ r.test_type or '—' }}</span></td>
-              <td>{% if r.failure_count and r.failure_count > 0 %}<span class="badge bg-danger">{{ r.failure_count }}</span>{% else %}<span class="badge bg-success">0</span>{% endif %}</td>
-              <td><small>{{ r.run_at }}</small></td>
-              <td>{% if r.sql_result %}<button class="btn btn-outline-secondary btn-sm btn-sm-custom" onclick="document.getElementById('res-{{ r.id }}').classList.toggle('d-none')">Show</button><pre id="res-{{ r.id }}" class="d-none mt-1">{{ r.sql_result[:500] }}</pre>{% endif %}</td>
+              <td>
+                <strong style="font-size:.85rem">
+                  {{ parsed.model if parsed.model else (r.model_name if r.model_name not in ('unknown','') else '—') }}
+                </strong>
+              </td>
+              <td>
+                {% if parsed.column %}
+                  <code style="font-size:.8rem;color:#a0c4ff">{{ parsed.column }}</code>
+                {% else %}
+                  <span class="text-muted">—</span>
+                {% endif %}
+              </td>
+              <td>
+                {% set tt = parsed.test_type or r.test_type or '' %}
+                {% if tt == 'not_null' %}
+                  <span class="lbadge" style="background:#1e2f4a;color:#60a5fa">not_null</span>
+                {% elif tt == 'unique' %}
+                  <span class="lbadge" style="background:#1e4838;color:#4ade80">unique</span>
+                {% elif tt == 'relationship' %}
+                  <span class="lbadge" style="background:#3b1f00;color:#fb923c">relationship</span>
+                {% elif tt == 'accepted_values' %}
+                  <span class="lbadge" style="background:#2d1f4a;color:#c084fc">accepted_values</span>
+                {% elif tt %}
+                  <span class="lbadge" style="background:#2d3142;color:#9aa0b4">{{ tt }}</span>
+                {% else %}
+                  <span class="text-muted">—</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if r.failure_count and r.failure_count > 0 %}
+                  <span class="badge bg-danger">{{ '{:,}'.format(r.failure_count) }}</span>
+                {% else %}
+                  <span class="badge bg-success">0</span>
+                {% endif %}
+              </td>
+              <td><small class="text-muted">{{ r.run_at or '—' }}</small></td>
+              <td>
+                {% if parsed.detail %}
+                  <small class="text-muted d-block" style="font-size:.75rem">{{ parsed.detail }}</small>
+                {% endif %}
+                {% if r.sql_result %}
+                  <button class="btn btn-outline-secondary btn-sm btn-sm-custom mt-1"
+                          onclick="document.getElementById('res-{{ r.id }}').classList.toggle('d-none')">
+                    <i class="bi bi-code me-1"></i>SQL
+                  </button>
+                  <pre id="res-{{ r.id }}" class="d-none mt-1">{{ r.sql_result[:500] }}</pre>
+                {% endif %}
+              </td>
             </tr>
             {% else %}
-            <tr><td colspan="7" class="text-center text-muted py-4">No test SQL results found.</td></tr>
+            <tr><td colspan="6" class="text-center text-muted py-4">No test SQL results found.</td></tr>
             {% endfor %}
             </tbody>
           </table>
@@ -1840,6 +2049,21 @@ function showToast(msg, title='ETL Monitor', isError=false) {
   el.classList.toggle('text-bg-danger', isError);
   el.classList.toggle('text-bg-dark',  !isError);
   new bootstrap.Toast(el, { delay: 4000 }).show();
+}
+
+function filterTests(status, el) {
+    // Scope active-state changes to THIS tab's pills only
+    document.querySelectorAll('#tab-tests .filter-pill').forEach(p => p.classList.remove('active'));
+    el.classList.add('active');
+    document.querySelectorAll('#dbtTestsTable tbody tr').forEach(row => {
+        if (status === 'all') {
+            row.style.display = '';
+        } else if (status === 'fail') {
+            row.style.display = row.dataset.testStatus === 'danger' ? '' : 'none';
+        } else {
+            row.style.display = row.dataset.testStatus !== 'danger' ? '' : 'none';
+        }
+    });
 }
 
 function openRangeForModel(modelName) {

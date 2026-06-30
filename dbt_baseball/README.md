@@ -42,4 +42,4 @@ dbt docs generate && dbt docs serve
 [mlb_dlt](https://github.com/keithwsmith/mlb_dlt.git) — MLB Stats API → SQL Server data warehouse
 
 ---
-*Generated 2026-06-28*
+*Generated 2026-06-29*
