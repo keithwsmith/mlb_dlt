@@ -372,10 +372,10 @@ def pipeline_status_summary():
         run['issues']        = check_out_of_range(run)
         run['zero_warnings'] = (
             check_zero_rows(run)
-            if run.get('status') == 'success' and not run['issues']
+            if (run.get('status') or '').lower() == 'success' and not run['issues']
             else []
         )
-        if run['status'] in ('failed', 'failure', 'error') or run['issues']:
+        if (run['status'] or '').lower() in ('fail', 'failed', 'failure', 'error') or run['issues']:
             run['status_color'] = 'danger'
         elif run['zero_warnings']:
             run['status_color'] = 'warning'
@@ -393,13 +393,13 @@ def failure_rates(days=7):
     SELECT
         model_name,
         COUNT(*) AS total_runs,
-        SUM(CASE WHEN status IN ('failed','failure','error') THEN 1 ELSE 0 END) AS failures,
+        SUM(CASE WHEN status IN ('fail','failed','failure','error') THEN 1 ELSE 0 END) AS failures,
         CAST(
-            100.0 * SUM(CASE WHEN status IN ('failed','failure','error') THEN 1 ELSE 0 END)
+            100.0 * SUM(CASE WHEN status IN ('fail','failed','failure','error') THEN 1 ELSE 0 END)
             / NULLIF(COUNT(*), 0)
         AS DECIMAL(5,2)) AS failure_rate_pct,
-        MAX(CASE WHEN status IN ('failed','failure','error') THEN start_time END) AS last_failure,
-        MAX(CASE WHEN status NOT IN ('failed','failure','error') THEN start_time END) AS last_ran
+        MAX(CASE WHEN status IN ('fail','failed','failure','error') THEN start_time END) AS last_failure,
+        MAX(CASE WHEN status NOT IN ('fail','failed','failure','error') THEN start_time END) AS last_ran
     FROM dbo.pipeline
     WHERE start_time >= DATEADD(day, -{days}, SYSUTCDATETIME())
     GROUP BY model_name
@@ -505,7 +505,7 @@ def dbt_model_executions(invocation_id=None, limit=100):
             for k in ('compile_started_at', 'query_completed_at'):
                 if r.get(k):
                     r[k] = str(r[k])[:19]
-            r['status_color'] = 'danger' if r.get('status') in ('error', 'fail') else 'success'
+            r['status_color'] = 'danger' if (r.get('status') or '').lower() in ('error', 'fail', 'failure', 'failed') else 'success'
         return rows
     except Exception as e:
         print(f"  [dbt_model_executions] {e}")
@@ -544,9 +544,9 @@ def dbt_test_executions(invocation_id=None, limit=200):
             )"""))
         for r in rows:
             failures = r.get('failures') or 0
-            status   = r.get('status') or ''
+            status   = (r.get('status') or '').lower()
             r['status_color'] = (
-                'danger' if status in ('fail', 'error') or failures > 0 else 'success'
+                'danger' if status in ('fail', 'failure', 'failed', 'error') or failures > 0 else 'success'
             )
             if r.get('run_started_at'):
                 r['run_started_at'] = str(r['run_started_at'])[:19]
@@ -1010,7 +1010,7 @@ TEMPLATE = r"""
             </tr></thead>
             <tbody>
             {% for r in history %}
-            <tr class="history-summary-row {{ 'table-danger' if r.status in ('failed','failure','error') else '' }}"
+            <tr class="history-summary-row {{ 'table-danger' if r.status|lower in ('fail','failed','failure','error') else '' }}"
                 style="cursor:pointer" data-model="{{ r.model_name }}"
                 onclick="toggleModelHistory(this, '{{ r.model_name }}')">
               <td class="expand-icon text-muted" style="width:28px">
@@ -1019,7 +1019,7 @@ TEMPLATE = r"""
               <td><strong>{{ r.model_name }}</strong></td>
               <td><span class="badge-layer">{{ r.model_layer }}</span></td>
               <td>
-                {% if r.status in ('failed','failure','error') %}
+                {% if r.status|lower in ('fail','failed','failure','error') %}
                   <span class="badge bg-danger">{{ r.status }}</span>
                 {% else %}
                   <span class="badge bg-success">{{ r.status }}</span>
@@ -1719,7 +1719,7 @@ function toggleModelHistory(summaryRow, modelName) {
           <th>Added</th><th>Elapsed (s)</th><th>Started</th><th>Error</th>
         </tr></thead><tbody>`;
       rows.forEach((r, i) => {
-        const isFail = ['failed','failure','error'].includes((r.status||'').toLowerCase());
+        const isFail = ['fail','failed','failure','error'].includes((r.status||'').toLowerCase());
         const fmt  = n => n != null ? Number(n).toLocaleString() : '\u2014';
         const fmtF = n => n != null ? parseFloat(n).toFixed(1) : '\u2014';
         const badge = isFail

@@ -1095,7 +1095,7 @@ sources:
             data_tests:
               - not_null
               - accepted_values:
-                  values: ['College', 'High School', 'Junior College', 'Independent', 'International']
+                  values: ['College', 'High School', 'Junior College', 'Independent', 'International','University/College']
           - name: classified_by
             description: >
               Method used to classify the school — defaults to "regex".

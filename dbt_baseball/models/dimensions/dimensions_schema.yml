@@ -29,8 +29,9 @@ models:
         description: Temperature in degrees Fahrenheit at game time.
         tests:
           - dbt_utils.accepted_range:
-              min_value: -20
-              max_value: 130
+              arguments:
+                min_value: -20
+                max_value: 130
 
       - name: weather_wind
         description: Wind speed and direction description at game time.
@@ -40,7 +41,8 @@ models:
         description: Total number of fans in attendance for the game.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: first_pitch
         description: Scheduled or actual first-pitch time for the game.
@@ -49,7 +51,8 @@ models:
         description: Total duration of the game in minutes.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       # --- Decisions ---
       - name: winning_pitcher_id
@@ -76,62 +79,72 @@ models:
         tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: home_hits
         description: Total hits recorded by the home team.
         tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: home_doubles
         description: Number of doubles hit by the home team.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: home_triples
         description: Number of triples hit by the home team.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: home_home_runs
         description: Number of home runs hit by the home team.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: home_rbi
         description: Total runs batted in by the home team.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: home_stolen_bases
         description: Number of stolen bases by the home team.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: home_strikeouts
         description: Number of times home team batters struck out.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: home_walks
         description: Number of walks drawn by home team batters.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: home_left_on_base
         description: Number of runners left on base by the home team.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       # --- Away Batting ---
       - name: away_runs
@@ -139,136 +152,158 @@ models:
         tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: away_hits
         description: Total hits recorded by the away team.
         tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: away_doubles
         description: Number of doubles hit by the away team.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: away_triples
         description: Number of triples hit by the away team.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: away_home_runs
         description: Number of home runs hit by the away team.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: away_rbi
         description: Total runs batted in by the away team.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: away_stolen_bases
         description: Number of stolen bases by the away team.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: away_strikeouts
         description: Number of times away team batters struck out.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: away_walks
         description: Number of walks drawn by away team batters.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: away_left_on_base
         description: Number of runners left on base by the away team.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       # --- Home Pitching ---
       - name: home_pitching_strikeouts
         description: Total strikeouts recorded by home team pitchers.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: home_pitching_walks
         description: Total walks issued by home team pitchers.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: home_pitching_hits_allowed
         description: Total hits allowed by home team pitchers.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: home_pitching_runs_allowed
         description: Total runs allowed by home team pitchers.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: home_pitching_earned_runs
         description: Total earned runs allowed by home team pitchers.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: home_pitching_home_runs_allowed
         description: Total home runs allowed by home team pitchers.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       # --- Away Pitching ---
       - name: away_pitching_strikeouts
         description: Total strikeouts recorded by away team pitchers.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: away_pitching_walks
         description: Total walks issued by away team pitchers.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: away_pitching_hits_allowed
         description: Total hits allowed by away team pitchers.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: away_pitching_runs_allowed
         description: Total runs allowed by away team pitchers.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: away_pitching_earned_runs
         description: Total earned runs allowed by away team pitchers.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       - name: away_pitching_home_runs_allowed
         description: Total home runs allowed by away team pitchers.
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
       # --- Audit ---
       - name: load_id
@@ -369,8 +404,9 @@ models:
         tests:
           - not_null
           - relationships:
-              to: ref('stg_play_events')
-              field: game_pk
+              arguments:
+                to: ref('stg_play_events')
+                field: game_pk
 
       - name: review_player_link
         description: URL or resource link to the player profile associated with the reviewed play.
