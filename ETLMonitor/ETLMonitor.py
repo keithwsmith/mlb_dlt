@@ -176,6 +176,33 @@ BEGIN
     )
 END
 
+-- ── transformation_audit_log: dbt-labs/audit_helper results ─────────────────
+-- Populated from the dbt side (see the audit_helper integration guide) —
+-- one row per model per audit run, logging the summary stats produced by
+-- audit_helper's compare_relations / compare_all_columns macros. This is
+-- the "full auditing of every change made in the transformation process"
+-- objective from the ETL Auditing best practice: it catches silent value
+-- drift that a green pipeline run and passing row-count checks would miss.
+IF NOT EXISTS (
+    SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+    WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='transformation_audit_log'
+)
+BEGIN
+    CREATE TABLE dbo.transformation_audit_log (
+        id                   INT IDENTITY(1,1) PRIMARY KEY,
+        model_name           NVARCHAR(200) NOT NULL,
+        baseline_description NVARCHAR(400),
+        run_at               DATETIME2 DEFAULT SYSUTCDATETIME(),
+        rows_compared        BIGINT,
+        columns_compared     INT,
+        perfect_match_pct    FLOAT,
+        conflicting_values   BIGINT,
+        missing_from_a       BIGINT,
+        missing_from_b       BIGINT,
+        detail_url           NVARCHAR(500)
+    )
+END
+
 -- ── vw_lineage_with_tests: lineage joined to latest test results ────────────
 -- Recreated on every startup so it always reflects the current schema.
 -- Source: dbo.dbt_test_log (command_invocation_id, test_name, model_name,
@@ -322,6 +349,40 @@ def check_zero_rows(run):
     return warnings
 
 
+# ── ROW-COUNT RECONCILIATION (ETL Auditing: "check that inputs match outputs") ──
+
+def check_reconciliation(run, tolerance=0):
+    """
+    Return a list of reconciliation warning strings when
+    start_record_count + records_added does not match end_record_count.
+
+    This is an advisory signal, not a hard failure — plenty of legitimate
+    load patterns (upserts, SCD2, deletes, dedup) will naturally violate a
+    strict start+added=end equation. The point isn't to flag those loads as
+    broken; it's to surface the discrepancy so a human can decide whether it
+    is expected for that particular model. Per the ETL Auditing best
+    practice: "a load without errors is not necessarily a successful load."
+    """
+    warnings = []
+    start = run.get('start_record_count')
+    end   = run.get('end_record_count')
+    added = run.get('records_added')
+
+    if start is None or end is None or added is None:
+        return warnings
+
+    expected = start + added
+    delta    = end - expected
+    if abs(delta) > tolerance:
+        direction = 'more' if delta > 0 else 'fewer'
+        warnings.append(
+            f"reconciliation mismatch — start ({start:,}) + added ({added:,}) = "
+            f"{expected:,} expected, but end is {end:,} "
+            f"({abs(delta):,} {direction} than expected)"
+        )
+    return warnings
+
+
 def check_out_of_range(run):
     """Return list of fields that are out of range for a pipeline run."""
     rows = query("SELECT * FROM dbo.pipeline_ranges WHERE model_name = ?", [run['model_name']])
@@ -375,9 +436,14 @@ def pipeline_status_summary():
             if (run.get('status') or '').lower() == 'success' and not run['issues']
             else []
         )
+        run['recon_warnings'] = (
+            check_reconciliation(run)
+            if (run.get('status') or '').lower() == 'success' and not run['issues']
+            else []
+        )
         if (run['status'] or '').lower() in ('fail', 'failed', 'failure', 'error') or run['issues']:
             run['status_color'] = 'danger'
-        elif run['zero_warnings']:
+        elif run['zero_warnings'] or run['recon_warnings']:
             run['status_color'] = 'warning'
         else:
             run['status_color'] = 'success'
@@ -470,10 +536,11 @@ def _latest_invocation_id():
         return None
 
 
-def dbt_model_executions(invocation_id=None, limit=100):
+def dbt_model_executions(invocation_id=None, limit=200):
     try:
-        inv_id = invocation_id or _latest_invocation_id()
-        if inv_id:
+        if invocation_id:
+            # Explicit invocation requested — show only what ran in that
+            # specific dbt invocation.
             sql = f"""
             SELECT TOP {limit}
                 me.name, me.status, me.total_node_runtime, me.rows_affected,
@@ -483,24 +550,32 @@ def dbt_model_executions(invocation_id=None, limit=100):
             WHERE me.command_invocation_id = ?
             ORDER BY me.total_node_runtime DESC
             """
-            rows = query(sql, [inv_id])
+            rows = query(sql, [invocation_id])
         else:
-            rows = []
-        if not rows:
-            sql_fallback = f"""
+            # Default view: latest execution of EVERY model, regardless of
+            # which invocation it ran in. This pipeline triggers a separate
+            # dbt invocation per model (see dbo.pipeline — each model has
+            # its own independent run timestamp), so filtering to just the
+            # single most-recent invocation would only ever show whichever
+            # one model happened to run last. Match the Pipeline tab's
+            # "latest run per model" semantics instead.
+            sql = f"""
             SELECT TOP {limit}
                 me.name, me.status, me.total_node_runtime, me.rows_affected,
                 me.message, me.materialization, me.compile_started_at,
                 me.query_completed_at, me.command_invocation_id
-            FROM silver.model_executions me
-            WHERE me.command_invocation_id = (
-                SELECT TOP 1 command_invocation_id
-                FROM silver.model_executions
-                ORDER BY compile_started_at DESC
-            )
-            ORDER BY me.total_node_runtime DESC
+            FROM (
+                SELECT me.*,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY me.name
+                           ORDER BY me.compile_started_at DESC
+                       ) AS rn
+                FROM silver.model_executions me
+            ) me
+            WHERE me.rn = 1
+            ORDER BY me.name
             """
-            rows = query(sql_fallback)
+            rows = query(sql)
         for r in rows:
             for k in ('compile_started_at', 'query_completed_at'):
                 if r.get(k):
@@ -512,69 +587,6 @@ def dbt_model_executions(invocation_id=None, limit=100):
         return []
 
 
-
-def dbt_test_executions(invocation_id=None, limit=200):
-    try:
-        inv_id = invocation_id or _latest_invocation_id()
-        _sql = f"""
-            SELECT TOP {limit}
-                COALESCE(t.name, te.node_id) AS test_name,
-                te.status, te.failures, te.message, te.total_node_runtime,
-                te.rows_affected, te.node_id, te.command_invocation_id,
-                te.run_started_at
-            FROM silver.test_executions te
-            LEFT JOIN silver.tests t
-                   ON te.command_invocation_id = t.command_invocation_id
-                  AND te.node_id = t.node_id
-            WHERE te.command_invocation_id = {{inv_clause}}
-            ORDER BY
-                CASE WHEN te.status IN ('fail','error') THEN 0 ELSE 1 END,
-                COALESCE(te.failures, 0) DESC,
-                te.total_node_runtime DESC
-        """
-        if inv_id:
-            rows = query(_sql.format(inv_clause='?'), [inv_id])
-        else:
-            rows = []
-        if not rows:
-            rows = query(_sql.format(inv_clause="""(
-                SELECT TOP 1 command_invocation_id
-                FROM silver.test_executions
-                ORDER BY run_started_at DESC
-            )"""))
-        for r in rows:
-            failures = r.get('failures') or 0
-            status   = (r.get('status') or '').lower()
-            r['status_color'] = (
-                'danger' if status in ('fail', 'failure', 'failed', 'error') or failures > 0 else 'success'
-            )
-            if r.get('run_started_at'):
-                r['run_started_at'] = str(r['run_started_at'])[:19]
-            # Parse node_id into readable fields
-            parsed = _parse_dbt_node_id(r.get('node_id') or r.get('test_name') or '')
-            r['parsed_test_type'] = parsed['test_type']
-            r['parsed_model']     = parsed['model']
-            r['parsed_column']    = parsed['column']
-            r['parsed_detail']    = parsed['detail']
-        return rows
-    except Exception as e:
-        print(f"  [dbt_test_executions] {e}")
-        return []
-
-
-def test_sql_results(limit=50):
-    sql = f"""
-    SELECT TOP {limit}
-        id, table_name, model_name, test_name, test_type,
-        failure_count, sql_statement, sql_result, run_at
-    FROM silver.test_sql
-    ORDER BY run_at DESC
-    """
-    rows = query(sql)
-    for r in rows:
-        if r.get('run_at'):
-            r['run_at'] = str(r['run_at'])[:19]
-    return rows
 
 
 def lineage_summary():
@@ -641,6 +653,103 @@ def get_pipeline_ranges():
     return query("SELECT * FROM dbo.pipeline_ranges ORDER BY model_name")
 
 
+def range_audit_log(limit=300):
+    """Range-threshold edits only (excludes the '(Alert Config)' sentinel rows)."""
+    sql = f"""
+    SELECT TOP {limit}
+        id, model_name, field_name, old_value, new_value, changed_by, changed_at
+    FROM dbo.pipeline_range_audit
+    WHERE model_name <> '(Alert Config)'
+    ORDER BY changed_at DESC
+    """
+    rows = query(sql)
+    for r in rows:
+        if r.get('changed_at'):
+            r['changed_at'] = str(r['changed_at'])[:19]
+    return rows
+
+
+def distinct_range_audit_models():
+    """Model names that have at least one range-audit entry — powers the dropdown."""
+    rows = query("""
+        SELECT DISTINCT model_name FROM dbo.pipeline_range_audit
+        WHERE model_name <> '(Alert Config)'
+        ORDER BY model_name
+    """)
+    return [r['model_name'] for r in rows]
+
+
+def alert_config_audit_log(limit=300):
+    """Alert Config changes only (webhook URL / enabled toggle edits)."""
+    sql = f"""
+    SELECT TOP {limit}
+        id, field_name, old_value, new_value, changed_by, changed_at
+    FROM dbo.pipeline_range_audit
+    WHERE model_name = '(Alert Config)'
+    ORDER BY changed_at DESC
+    """
+    rows = query(sql)
+    for r in rows:
+        if r.get('changed_at'):
+            r['changed_at'] = str(r['changed_at'])[:19]
+    return rows
+
+
+def _transform_audit_status_color(pct):
+    return (
+        'danger'  if pct is not None and pct < 99.0 else
+        'warning' if pct is not None and pct < 99.9 else
+        'success'
+    )
+
+
+def transformation_audit_latest(limit=100):
+    """
+    One row per model: its most recent dbt-labs/audit_helper run. This powers
+    the Model Audit summary list — click a row's chevron to load that
+    model's full history (older runs, sorted by date) via
+    /api/transform-audit/<model_name>.
+    """
+    sql = f"""
+    SELECT TOP {limit}
+        model_name, baseline_description, run_at, rows_compared,
+        columns_compared, perfect_match_pct, conflicting_values,
+        missing_from_a, missing_from_b, detail_url
+    FROM (
+        SELECT *,
+               ROW_NUMBER() OVER (PARTITION BY model_name ORDER BY run_at DESC) AS rn
+        FROM dbo.transformation_audit_log
+    ) x
+    WHERE rn = 1
+    ORDER BY model_name
+    """
+    rows = query(sql)
+    for r in rows:
+        if r.get('run_at'):
+            r['run_at'] = str(r['run_at'])[:19]
+        r['status_color'] = _transform_audit_status_color(r.get('perfect_match_pct'))
+    return rows
+
+
+def transformation_audit_history(model_name, limit=50):
+    """Full audit history for a single model, most recent first."""
+    sql = f"""
+    SELECT TOP {limit}
+        model_name, baseline_description, run_at, rows_compared,
+        columns_compared, perfect_match_pct, conflicting_values,
+        missing_from_a, missing_from_b, detail_url
+    FROM dbo.transformation_audit_log
+    WHERE model_name = ?
+    ORDER BY run_at DESC
+    """
+    rows = query(sql, [model_name])
+    for r in rows:
+        if r.get('run_at'):
+            r['run_at'] = str(r['run_at'])[:19]
+        r['status_color'] = _transform_audit_status_color(r.get('perfect_match_pct'))
+    return rows
+
+
 def overall_health():
     """
     Green  = all models succeeded, no range violations, no zero-row warnings
@@ -703,7 +812,15 @@ def build_alert_payload(runs, health):
                 'layer':    r.get('model_layer'),
                 'warnings': r['zero_warnings'],
             }
-            for r in ambers
+            for r in ambers if r.get('zero_warnings')
+        ],
+        'reconciliation_warnings': [
+            {
+                'model':    r['model_name'],
+                'layer':    r.get('model_layer'),
+                'warnings': r['recon_warnings'],
+            }
+            for r in ambers if r.get('recon_warnings')
         ],
     }
 
@@ -785,6 +902,8 @@ TEMPLATE = r"""
                  border-radius:4px; font-size:.7rem; padding:1px 6px; margin:1px; display:inline-block; }
   .zero-badge  { background:#f59e0b22; color:#f59e0b; border:1px solid #f59e0b55;
                  border-radius:4px; font-size:.7rem; padding:1px 6px; margin:1px; display:inline-block; }
+  .recon-badge { background:#a78bfa22; color:#a78bfa; border:1px solid #a78bfa55;
+                 border-radius:4px; font-size:.7rem; padding:1px 6px; margin:1px; display:inline-block; }
   .btn-sm-custom { font-size:.75rem; padding:3px 10px; }
   input[type=number],input[type=url],input[type=text] {
     background:#0f1117; border:1px solid #2d3142; color:#e0e0e0;
@@ -834,6 +953,10 @@ TEMPLATE = r"""
       <button class="btn btn-outline-primary btn-sm" onclick="seedRanges()">
         <i class="bi bi-magic me-1"></i>Auto-seed Ranges
       </button>
+      <button class="btn btn-outline-secondary btn-sm" id="changedByBtn" onclick="promptChangedBy()"
+              title="Set your name — attached to audit log entries when you edit ranges or alert config">
+        <i class="bi bi-person me-1"></i><span id="changedByLabel">Set your name</span>
+      </button>
       <button class="btn btn-outline-light btn-sm" onclick="location.reload()">
         <i class="bi bi-arrow-clockwise"></i>
       </button>
@@ -865,10 +988,10 @@ TEMPLATE = r"""
     </div>
     <div class="col-6 col-md-3">
       <div class="stat-card">
-        <div class="text-muted" style="font-size:.8rem">ZERO-ROW WARNINGS</div>
+        <div class="text-muted" style="font-size:.8rem">DATA WARNINGS</div>
         <div class="stat-val" style="color:#f59e0b">{{ runs|selectattr('status_color','eq','warning')|list|length }}</div>
         <div style="font-size:.8rem;color:#9aa0b4;margin-top:4px">
-          <i class="bi bi-exclamation-triangle me-1"></i>Succeeded but loaded 0 rows
+          <i class="bi bi-exclamation-triangle me-1"></i>Zero-row loads or reconciliation mismatches
         </div>
       </div>
     </div>
@@ -902,13 +1025,21 @@ TEMPLATE = r"""
     </button></li>
     <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-dbt">
       <i class="bi bi-diagram-3 me-1"></i>dbt Models</button></li>
-    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-tests">
-      <i class="bi bi-check2-circle me-1"></i>dbt Tests</button></li>
-    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-testsql">
-      <i class="bi bi-code-square me-1"></i>Test SQL</button></li>
     <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-alerts">
       <i class="bi bi-bell me-1"></i>Alerts
       {% if alert_cfg.enabled %}<span class="badge rounded-pill ms-1" style="background:#22c55e33;color:#22c55e;font-size:.65rem">ON</span>{% endif %}
+    </button></li>
+    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-range-audit">
+      <i class="bi bi-sliders me-1"></i>Range Audit
+      {% if range_audit %}<span class="badge rounded-pill ms-1" style="background:#a78bfa33;color:#a78bfa;font-size:.65rem">{{ range_audit|length }}</span>{% endif %}
+    </button></li>
+    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-model-audit">
+      <i class="bi bi-shuffle me-1"></i>Model Audit
+      {% if transform_audit %}<span class="badge rounded-pill ms-1" style="background:#a78bfa33;color:#a78bfa;font-size:.65rem">{{ transform_audit|length }}</span>{% endif %}
+    </button></li>
+    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-audit">
+      <i class="bi bi-journal-text me-1"></i>Config Audit
+      {% if alert_audit %}<span class="badge rounded-pill ms-1" style="background:#a78bfa33;color:#a78bfa;font-size:.65rem">{{ alert_audit|length }}</span>{% endif %}
     </button></li>
   </ul>
 
@@ -970,6 +1101,11 @@ TEMPLATE = r"""
                 {% for w in r.zero_warnings %}
                   <span class="zero-badge" title="Zero-row load detected — review if this model should always produce rows">
                     <i class="bi bi-exclamation-triangle me-1"></i>{{ w }}
+                  </span>
+                {% endfor %}
+                {% for w in r.recon_warnings %}
+                  <span class="recon-badge" title="{{ w }}">
+                    <i class="bi bi-calculator me-1"></i>reconciliation mismatch
                   </span>
                 {% endfor %}
               </td>
@@ -1056,7 +1192,7 @@ TEMPLATE = r"""
       <div class="row g-3">
         <div class="col-md-6">
           <div class="card">
-            <div class="card-header"><i class="bi bi-bar-chart me-2"></i>Last 7 Days</div>
+            <div class="card-header"><i class="bi bi-bar-chart me-2"></i>Failure Rates Last 7 Days</div>
             <div class="card-body p-0">
               <table class="table table-sm mb-0">
                 <thead><tr><th>Model</th><th>Runs</th><th>Failures</th><th>Rate %</th><th>Last Failure</th><th>Last Ran</th></tr></thead>
@@ -1087,7 +1223,7 @@ TEMPLATE = r"""
         </div>
         <div class="col-md-6">
           <div class="card">
-            <div class="card-header"><i class="bi bi-bar-chart me-2"></i>Last 30 Days</div>
+            <div class="card-header"><i class="bi bi-bar-chart me-2"></i>Failure Rates Last 30 Days</div>
             <div class="card-body p-0">
               <table class="table table-sm mb-0">
                 <thead><tr><th>Model</th><th>Runs</th><th>Failures</th><th>Rate %</th><th>Last Failure</th><th>Last Ran</th></tr></thead>
@@ -1328,196 +1464,6 @@ TEMPLATE = r"""
       </div>
     </div>
 
-    <!-- ── DBT TESTS ── -->
-    <div class="tab-pane fade" id="tab-tests">
-      <div class="card">
-        <div class="card-header d-flex justify-content-between align-items-center">
-          <span><i class="bi bi-check2-circle me-2"></i>Latest dbt Test Executions</span>
-          {% if dbt_tests %}
-          <span class="text-muted" style="font-size:.8rem">
-            Run: {{ dbt_tests[0].run_started_at or '—' }}
-            &nbsp;|&nbsp;
-            <span class="text-danger">{{ dbt_tests | selectattr('status_color','eq','danger') | list | length }} failed</span>
-            &nbsp;/&nbsp;
-            {{ dbt_tests | length }} total
-          </span>
-          {% endif %}
-        </div>
-        <!-- Filter pills -->
-        <div class="px-3 pt-3 pb-2 d-flex flex-wrap gap-2 align-items-center">
-          <span style="font-size:.8rem;color:#9aa0b4">Filter:</span>
-          <span class="filter-pill active" onclick="filterTests('all',this)">All</span>
-          <span class="filter-pill" onclick="filterTests('fail',this)">
-            <i class="bi bi-x-circle me-1"></i>Failures only
-          </span>
-          <span class="filter-pill" onclick="filterTests('pass',this)">
-            <i class="bi bi-check-circle me-1"></i>Passing only
-          </span>
-        </div>
-        <div class="card-body p-0">
-          <div class="table-responsive">
-          <table class="table table-sm mb-0" id="dbtTestsTable">
-            <thead><tr>
-              <th>Model</th>
-              <th>Column</th>
-              <th>Test Type</th>
-              <th>Status</th>
-              <th>Failures</th>
-              <th>Runtime (s)</th>
-              <th>Detail / Ref</th>
-              <th>Message</th>
-            </tr></thead>
-            <tbody>
-            {% for r in dbt_tests %}
-            <tr class="{{ 'table-danger' if r.status_color == 'danger' else '' }}"
-                data-test-status="{{ r.status_color }}">
-              <td>
-                <strong style="font-size:.85rem">{{ r.parsed_model or '—' }}</strong>
-                {% if not r.parsed_model %}
-                <small class="text-muted d-block" style="font-size:.7rem;word-break:break-all">{{ r.node_id }}</small>
-                {% endif %}
-              </td>
-              <td>
-                {% if r.parsed_column %}
-                  <code style="font-size:.8rem;color:#a0c4ff">{{ r.parsed_column }}</code>
-                {% else %}
-                  <span class="text-muted">—</span>
-                {% endif %}
-              </td>
-              <td>
-                {% set tt = r.parsed_test_type %}
-                {% if tt == 'not_null' %}
-                  <span class="lbadge" style="background:#1e2f4a;color:#60a5fa">not_null</span>
-                {% elif tt == 'unique' %}
-                  <span class="lbadge" style="background:#1e4838;color:#4ade80">unique</span>
-                {% elif tt == 'relationship' %}
-                  <span class="lbadge" style="background:#3b1f00;color:#fb923c">relationship</span>
-                {% elif tt == 'accepted_values' %}
-                  <span class="lbadge" style="background:#2d1f4a;color:#c084fc">accepted_values</span>
-                {% elif tt == 'expectation' %}
-                  <span class="lbadge" style="background:#1a3535;color:#2dd4bf">expectation</span>
-                {% else %}
-                  <span class="lbadge" style="background:#2d3142;color:#9aa0b4">{{ tt or 'custom' }}</span>
-                {% endif %}
-              </td>
-              <td>
-                {% if r.status_color == 'danger' %}
-                  <span class="badge bg-danger"><i class="bi bi-x-circle me-1"></i>{{ r.status }}</span>
-                {% else %}
-                  <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>{{ r.status }}</span>
-                {% endif %}
-              </td>
-              <td>
-                {% if r.failures and r.failures > 0 %}
-                  <span class="badge bg-danger">{{ '{:,}'.format(r.failures) }}</span>
-                {% else %}
-                  <span class="text-muted">{{ r.failures if r.failures is not none else '—' }}</span>
-                {% endif %}
-              </td>
-              <td>{{ '%.3f'|format(r.total_node_runtime) if r.total_node_runtime is not none else '—' }}</td>
-              <td>
-                {% if r.parsed_detail %}
-                  <small class="text-muted" style="font-size:.75rem">{{ r.parsed_detail }}</small>
-                {% else %}
-                  <span class="text-muted">—</span>
-                {% endif %}
-              </td>
-              <td>
-                {% if r.message %}
-                  <small class="{{ 'text-danger' if r.status_color == 'danger' else 'text-muted' }}"
-                         style="font-size:.75rem">
-                    {{ (r.message or '')[:120] }}
-                  </small>
-                {% else %}
-                  <span class="text-muted">—</span>
-                {% endif %}
-              </td>
-            </tr>
-            {% else %}
-            <tr><td colspan="8" class="text-center text-muted py-4">No dbt test executions found.</td></tr>
-            {% endfor %}
-            </tbody>
-          </table>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ── TEST SQL ── -->
-    <div class="tab-pane fade" id="tab-testsql">
-      <div class="card">
-        <div class="card-header"><i class="bi bi-code-square me-2"></i>Custom Test SQL Results</div>
-        <div class="card-body p-0">
-          <div class="table-responsive">
-          <table class="table table-sm mb-0">
-            <thead><tr>
-              <th>Model</th><th>Column</th><th>Test Type</th>
-              <th>Failures</th><th>Run At</th><th>Detail / SQL</th>
-            </tr></thead>
-            <tbody>
-            {% for r in test_sql %}
-            {# Parse the test_name into readable parts #}
-            {% set raw = r.test_name or r.table_name or '' %}
-            {% set parsed = raw | parse_test_name %}
-            <tr class="{{ 'table-danger' if r.failure_count and r.failure_count > 0 else '' }}">
-              <td>
-                <strong style="font-size:.85rem">
-                  {{ parsed.model if parsed.model else (r.model_name if r.model_name not in ('unknown','') else '—') }}
-                </strong>
-              </td>
-              <td>
-                {% if parsed.column %}
-                  <code style="font-size:.8rem;color:#a0c4ff">{{ parsed.column }}</code>
-                {% else %}
-                  <span class="text-muted">—</span>
-                {% endif %}
-              </td>
-              <td>
-                {% set tt = parsed.test_type or r.test_type or '' %}
-                {% if tt == 'not_null' %}
-                  <span class="lbadge" style="background:#1e2f4a;color:#60a5fa">not_null</span>
-                {% elif tt == 'unique' %}
-                  <span class="lbadge" style="background:#1e4838;color:#4ade80">unique</span>
-                {% elif tt == 'relationship' %}
-                  <span class="lbadge" style="background:#3b1f00;color:#fb923c">relationship</span>
-                {% elif tt == 'accepted_values' %}
-                  <span class="lbadge" style="background:#2d1f4a;color:#c084fc">accepted_values</span>
-                {% elif tt %}
-                  <span class="lbadge" style="background:#2d3142;color:#9aa0b4">{{ tt }}</span>
-                {% else %}
-                  <span class="text-muted">—</span>
-                {% endif %}
-              </td>
-              <td>
-                {% if r.failure_count and r.failure_count > 0 %}
-                  <span class="badge bg-danger">{{ '{:,}'.format(r.failure_count) }}</span>
-                {% else %}
-                  <span class="badge bg-success">0</span>
-                {% endif %}
-              </td>
-              <td><small class="text-muted">{{ r.run_at or '—' }}</small></td>
-              <td>
-                {% if parsed.detail %}
-                  <small class="text-muted d-block" style="font-size:.75rem">{{ parsed.detail }}</small>
-                {% endif %}
-                {% if r.sql_result %}
-                  <button class="btn btn-outline-secondary btn-sm btn-sm-custom mt-1"
-                          onclick="document.getElementById('res-{{ r.id }}').classList.toggle('d-none')">
-                    <i class="bi bi-code me-1"></i>SQL
-                  </button>
-                  <pre id="res-{{ r.id }}" class="d-none mt-1">{{ r.sql_result[:500] }}</pre>
-                {% endif %}
-              </td>
-            </tr>
-            {% else %}
-            <tr><td colspan="6" class="text-center text-muted py-4">No test SQL results found.</td></tr>
-            {% endfor %}
-            </tbody>
-          </table>
-          </div>
-        </div>
-      </div>
-    </div>
 
     <!-- ── ALERTS TAB ── -->
     <div class="tab-pane fade" id="tab-alerts">
@@ -1644,6 +1590,179 @@ if ($response.health -ne 'green') {
 
     </div><!-- /tab-alerts -->
 
+    <!-- ── AUDIT LOG ── -->
+    <div class="tab-pane fade" id="tab-range-audit">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-sliders me-2"></i>Range Threshold Changes</span>
+          <small class="text-muted"><i class="bi bi-info-circle me-1"></i>Edits to pipeline range thresholds, most recent first</small>
+        </div>
+        <div class="px-3 pt-3 pb-2 d-flex flex-wrap gap-2 align-items-center">
+          <span style="font-size:.8rem;color:#9aa0b4">Model:</span>
+          <select id="rangeAuditModelSelect" style="width:220px;" onchange="filterRangeAudit()">
+            <option value="">All models</option>
+            {% for m in range_audit_models %}
+            <option value="{{ m|lower }}">{{ m }}</option>
+            {% endfor %}
+          </select>
+          <span style="font-size:.8rem;color:#9aa0b4">Search:</span>
+          <input type="text" id="rangeAuditSearch" placeholder="field name…"
+                 style="width:180px;" oninput="filterRangeAudit()">
+        </div>
+        <div class="card-body p-0">
+          <div class="table-responsive">
+          <table class="table table-sm mb-0" id="rangeAuditTable">
+            <thead><tr>
+              <th>Changed At (UTC)</th><th>Changed By</th><th>Model</th>
+              <th>Field</th><th>Old Value</th><th></th><th>New Value</th>
+            </tr></thead>
+            <tbody>
+            {% for a in range_audit %}
+            <tr data-model="{{ (a.model_name or '')|lower }}" data-field="{{ (a.field_name or '')|lower }}">
+              <td><small class="text-muted">{{ a.changed_at or '—' }}</small></td>
+              <td>
+                {% if a.changed_by %}
+                  <span style="color:#93c5fd">{{ a.changed_by }}</span>
+                {% else %}
+                  <span class="text-muted" title="No name was set in the browser that made this change">unknown</span>
+                {% endif %}
+              </td>
+              <td><strong>{{ a.model_name or '—' }}</strong></td>
+              <td><code style="font-size:.78rem;color:#a0c4ff">{{ a.field_name or '—' }}</code></td>
+              <td style="font-size:.8rem;color:#f87171">{{ a.old_value if a.old_value is not none else '—' }}</td>
+              <td class="text-muted"><i class="bi bi-arrow-right"></i></td>
+              <td style="font-size:.8rem;color:#4ade80">{{ a.new_value if a.new_value is not none else '—' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7" class="text-center text-muted py-4">
+              No range edits yet. Edits to Ranges thresholds will show up here.
+            </td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+          </div>
+        </div>
+      </div>
+    </div><!-- /tab-range-audit -->
+
+    <!-- ── MODEL AUDIT (dbt-labs/audit_helper) ── -->
+    <div class="tab-pane fade" id="tab-model-audit">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-shuffle me-2"></i>Transformation Audits <small class="text-muted">(dbt-labs/audit_helper)</small></span>
+          <small class="text-muted"><i class="bi bi-hand-index me-1"></i>Click a model to see older runs</small>
+        </div>
+        <div class="px-3 pt-3 pb-2 d-flex flex-wrap gap-2 align-items-center">
+          <span style="font-size:.8rem;color:#9aa0b4">Model:</span>
+          <select id="modelAuditModelSelect" style="width:220px;" onchange="filterModelAudit()">
+            <option value="">All models</option>
+            {% for a in transform_audit %}
+            <option value="{{ a.model_name|lower }}">{{ a.model_name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="card-body p-0">
+          <div class="table-responsive">
+          <table class="table table-sm mb-0" id="modelAuditTable">
+            <thead><tr>
+              <th style="width:28px"></th>
+              <th>Model</th><th>Baseline</th><th>Latest Run At (UTC)</th>
+              <th class="text-center">Rows Compared</th><th class="text-center">Columns</th>
+              <th class="text-center">Match %</th><th class="text-center">Conflicts</th>
+              <th class="text-center">Missing A/B</th>
+            </tr></thead>
+            <tbody>
+            {% for a in transform_audit %}
+            <tr class="model-audit-summary-row {{ 'table-danger' if a.status_color == 'danger' else ('table-warning bg-opacity-10' if a.status_color == 'warning' else '') }}"
+                style="cursor:pointer" data-model="{{ a.model_name|lower }}"
+                data-safe-id="{{ a.model_name | replace(' ','_') | replace('.','_') }}"
+                onclick="toggleModelAudit(this, '{{ a.model_name }}')">
+              <td class="expand-icon text-muted" style="width:28px">
+                <i class="bi bi-chevron-right" style="font-size:.75rem"></i>
+              </td>
+              <td><strong>{{ a.model_name }}</strong></td>
+              <td><small class="text-muted">{{ a.baseline_description or '—' }}</small></td>
+              <td><small class="text-muted">{{ a.run_at or '—' }}</small></td>
+              <td class="text-center">{{ '{:,}'.format(a.rows_compared) if a.rows_compared is not none else '—' }}</td>
+              <td class="text-center">{{ a.columns_compared if a.columns_compared is not none else '—' }}</td>
+              <td class="text-center">
+                {% if a.perfect_match_pct is not none %}
+                  <span class="{{ 'badge bg-danger' if a.status_color == 'danger' else ('badge' if a.status_color == 'warning' else 'badge bg-success') }}"
+                        style="{{ 'background:#f59e0b;color:#000' if a.status_color == 'warning' else '' }}">
+                    {{ '%.2f'|format(a.perfect_match_pct) }}%
+                  </span>
+                {% else %}—{% endif %}
+              </td>
+              <td class="text-center">{{ '{:,}'.format(a.conflicting_values) if a.conflicting_values is not none else '—' }}</td>
+              <td class="text-center">
+                {{ '{:,}'.format(a.missing_from_a) if a.missing_from_a is not none else '0' }} /
+                {{ '{:,}'.format(a.missing_from_b) if a.missing_from_b is not none else '0' }}
+              </td>
+            </tr>
+            <tr class="model-audit-detail-row d-none" id="madetail-{{ a.model_name | replace(' ','_') | replace('.','_') }}">
+              <td colspan="9" class="p-0">
+                <div class="detail-inner" style="background:#12151f;border-top:1px solid #2d3142;border-bottom:2px solid #7c83fd33;">
+                  <div class="p-2 text-muted" style="font-size:.78rem">
+                    <i class="bi bi-hourglass-split me-1"></i>Loading older runs…
+                  </div>
+                </div>
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="9" class="text-center text-muted py-4">
+              No transformation audit results yet. Set up dbt-labs/audit_helper in your dbt project
+              and write summary rows to <code>dbo.transformation_audit_log</code> — see the integration guide.
+            </td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+          </div>
+        </div>
+      </div>
+    </div><!-- /tab-model-audit -->
+
+    <!-- ── CONFIG AUDIT ── -->
+    <div class="tab-pane fade" id="tab-audit">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-bell me-2"></i>Alert Config Changes</span>
+          <small class="text-muted"><i class="bi bi-info-circle me-1"></i>Webhook URL / enabled toggle edits, most recent first</small>
+        </div>
+        <div class="card-body p-0">
+          <div class="table-responsive">
+          <table class="table table-sm mb-0" id="alertAuditTable">
+            <thead><tr>
+              <th>Changed At (UTC)</th><th>Changed By</th>
+              <th>Field</th><th>Old Value</th><th></th><th>New Value</th>
+            </tr></thead>
+            <tbody>
+            {% for a in alert_audit %}
+            <tr>
+              <td><small class="text-muted">{{ a.changed_at or '—' }}</small></td>
+              <td>
+                {% if a.changed_by %}
+                  <span style="color:#93c5fd">{{ a.changed_by }}</span>
+                {% else %}
+                  <span class="text-muted" title="No name was set in the browser that made this change">unknown</span>
+                {% endif %}
+              </td>
+              <td><code style="font-size:.78rem;color:#a0c4ff">{{ a.field_name or '—' }}</code></td>
+              <td style="font-size:.8rem;color:#f87171">{{ a.old_value if a.old_value is not none else '—' }}</td>
+              <td class="text-muted"><i class="bi bi-arrow-right"></i></td>
+              <td style="font-size:.8rem;color:#4ade80">{{ a.new_value if a.new_value is not none else '—' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6" class="text-center text-muted py-4">
+              No alert config edits yet. Changes to the webhook URL or enabled toggle will show up here.
+            </td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+          </div>
+        </div>
+      </div>
+    </div><!-- /tab-audit -->
+
   </div><!-- tab-content -->
 </div><!-- container -->
 
@@ -1661,9 +1780,43 @@ if ($response.health -ne 'green') {
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 {%- raw %}
+// ── Changed-by identity ──────────────────────────────────────────────────────
+// ETLMonitor has no login system, so "who made this change" can't come from
+// auth. Instead we ask the person to set a display name once; it's stored in
+// localStorage (per-browser, not secure/verified — this is attribution for
+// convenience and audit-trail readability, not access control) and sent
+// along with every range/alert-config save so the audit log shows a real
+// name instead of the shared SQL service account.
+const CHANGED_BY_KEY = 'etlmonitor_changed_by';
+
+function getChangedBy() {
+  return localStorage.getItem(CHANGED_BY_KEY) || null;
+}
+
+function promptChangedBy() {
+  const current = getChangedBy() || '';
+  const name = window.prompt('Your name (attached to audit log entries when you edit ranges or alert config):', current);
+  if (name === null) return; // cancelled
+  const trimmed = name.trim();
+  if (trimmed) {
+    localStorage.setItem(CHANGED_BY_KEY, trimmed);
+  } else {
+    localStorage.removeItem(CHANGED_BY_KEY);
+  }
+  updateChangedByLabel();
+}
+
+function updateChangedByLabel() {
+  const label = document.getElementById('changedByLabel');
+  if (!label) return;
+  const name = getChangedBy();
+  label.textContent = name || 'Set your name';
+}
+
 // ── Tab memory ──────────────────────────────────────────────────────────────
 const TAB_KEY = 'etlmonitor_active_tab';
 document.addEventListener('DOMContentLoaded', () => {
+  updateChangedByLabel();
   const saved = localStorage.getItem(TAB_KEY);
   if (saved) {
     const tabEl = document.querySelector(`[data-bs-target="${saved}"]`);
@@ -1878,12 +2031,32 @@ function loadSurrogateSource(modelName, columnName, btnId, preId) {
       //       'col_b'
       //   ]) }} as draft_key,
       const colEscaped = columnName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      // Match from {{ through to ]) }} as <column_name>
-      const pattern = new RegExp(
-        '\\{\\{[\\s\\S]*?generate_surrogate_key\\([\\s\\S]*?\\]\\s*\\)\\s*\\}\\}\\s*as\\s+' + colEscaped,
+      // Match from {{ through to ]) }} as <column_name>.
+      // IMPORTANT: the opening {{ must be immediately (mod whitespace /
+      // optional "dbt_utils." namespace) followed by generate_surrogate_key(.
+      // Without this anchor, [\s\S]*? happily latches onto the FIRST {{ in
+      // the file (e.g. the {{ config(...) }} block at the top) and lazily
+      // sweeps across everything in between — dumping most of the file
+      // instead of just the surrogate-key expression.
+      const strictPattern = new RegExp(
+        '\\{\\{\\s*(?:\\w+\\.)?generate_surrogate_key\\([\\s\\S]*?\\]\\s*\\)\\s*\\}\\}\\s*as\\s+' + colEscaped,
         'i'
       );
-      const match = src.match(pattern);
+      // Lineage metadata sometimes labels the KEY row generically (e.g.
+      // "surrogate_key") rather than the model's real output alias (e.g.
+      // "award_key"). When that happens the strict, name-anchored pattern
+      // above never matches — and worse, the OLD fallback below would do
+      // indexOf(columnName) and accidentally match "surrogate_key" as a
+      // substring of "generate_surrogate_key(" itself, landing the context
+      // window on the wrong part of the file entirely. A dbt model has at
+      // most one surrogate-key definition in the vast majority of cases, so
+      // before falling back to a fuzzy window / full source, try matching
+      // the generate_surrogate_key(...) call with ANY trailing "as <ident>",
+      // ignoring the (possibly wrong) lineage column name.
+      const genericPattern =
+        /\{\{\s*(?:\w+\.)?generate_surrogate_key\([\s\S]*?\]\s*\)\s*\}\}\s*as\s+\w+/i;
+
+      const match = src.match(strictPattern) || src.match(genericPattern);
 
       let display;
       if (match) {
@@ -1926,6 +2099,20 @@ function openLineageForModel(modelName) {
   function _scrollAndOpen() {
     const safeId = bareName.replace(/[\s.]/g, '_');
 
+    // The layer-filter pills and search box on the Lineage tab hide
+    // non-matching rows via row.style.display = 'none', and that filter
+    // state (_lineageLayerFilter / _lineageSearchFilter) is global — it
+    // persists even after switching away to the Pipeline tab. Without this
+    // reset, clicking "Lineage" for a model that doesn't match a filter
+    // left over from a previous visit would find the row (it's still in
+    // the DOM) and "successfully" scrollIntoView()/outline it — but since
+    // the row is display:none, nothing visible happens at all.
+    const allPill = document.querySelector('#lineageFilters .filter-pill');
+    const searchBox = document.getElementById('lineageSearch');
+    if (searchBox) searchBox.value = '';
+    _lineageSearchFilter = '';
+    filterLineage(allPill || null, 'all');
+
     // Try exact match first, then bare-name match
     let summaryRow = document.querySelector('#lineageTbody tr[data-model="' + bareName + '"]');
     if (!summaryRow) {
@@ -1933,6 +2120,7 @@ function openLineageForModel(modelName) {
     }
     if (!summaryRow) {
       console.warn('openLineageForModel: no lineage row found for "' + bareName + '" or "' + modelName + '"');
+      showToast('No lineage data found for "' + bareName + '"', 'ETL Monitor', true);
       return;
     }
 
@@ -1984,6 +2172,93 @@ function filterLineage(pill, layer) {
   });
 }
 
+// ── Range Audit tab ─────────────────────────────────────────────────────────
+function filterRangeAudit() {
+  const model = (document.getElementById('rangeAuditModelSelect').value || '').toLowerCase();
+  const term  = (document.getElementById('rangeAuditSearch').value || '').toLowerCase();
+  document.querySelectorAll('#rangeAuditTable tbody tr[data-model]').forEach(row => {
+    const modelMatch = !model || row.dataset.model === model;
+    const termMatch  = !term  || row.dataset.field.includes(term);
+    row.style.display = (modelMatch && termMatch) ? '' : 'none';
+  });
+}
+
+// ── Model Audit tab ──────────────────────────────────────────────────────────
+function filterModelAudit() {
+  const model = (document.getElementById('modelAuditModelSelect').value || '').toLowerCase();
+  document.querySelectorAll('#modelAuditTable .model-audit-summary-row').forEach(row => {
+    const show = !model || row.dataset.model === model;
+    row.style.display = show ? '' : 'none';
+    // Collapse (and hide) the detail row alongside its summary row
+    const detailRow = document.getElementById('madetail-' + row.dataset.safeId);
+    if (detailRow) detailRow.style.display = show ? '' : 'none';
+  });
+}
+
+function toggleModelAudit(summaryRow, modelName) {
+  const safeId    = modelName.replace(/[\s.]/g, '_');
+  const detailRow = document.getElementById('madetail-' + safeId);
+  if (!detailRow) {
+    console.error('toggleModelAudit: detail row not found for id=madetail-' + safeId);
+    return;
+  }
+  const isOpen = !detailRow.classList.contains('d-none');
+  const icon   = summaryRow.querySelector('.expand-icon i');
+  if (isOpen) {
+    detailRow.classList.add('d-none');
+    if (icon) icon.className = 'bi bi-chevron-right';
+    summaryRow.style.outline = '';
+    return;
+  }
+  detailRow.classList.remove('d-none');
+  if (icon) icon.className = 'bi bi-chevron-down';
+  summaryRow.style.outline = '2px solid #7c83fd44';
+  const inner = detailRow.querySelector('.detail-inner');
+  if (!inner) {
+    console.error('toggleModelAudit: .detail-inner not found inside detailRow');
+    return;
+  }
+  if (inner.dataset.loaded === '1') return;
+  fetch('/api/transform-audit/' + encodeURIComponent(modelName))
+    .then(r => r.json())
+    .then(data => {
+      if (!data.ok) { inner.innerHTML = `<div class="p-2 text-danger">Error: ${data.error}</div>`; return; }
+      const rows = data.rows;
+      if (!rows.length) { inner.innerHTML = '<div class="p-2 text-muted">No older runs found.</div>'; return; }
+      // First row is the current/latest run (already shown in the summary row) —
+      // skip it here so the expanded section only shows OLDER runs.
+      const older = rows.slice(1);
+      if (!older.length) { inner.innerHTML = '<div class="p-2 text-muted">No older runs — this is the only audit run so far.</div>'; return; }
+      let html = `<table class="table table-sm mb-0" style="font-size:.8rem">
+        <thead><tr style="background:#1a1d27">
+          <th>Run At (UTC)</th><th>Baseline</th>
+          <th class="text-center">Rows</th><th class="text-center">Match %</th>
+          <th class="text-center">Conflicts</th><th class="text-center">Missing A/B</th>
+        </tr></thead><tbody>`;
+      older.forEach(r => {
+        const fmt = n => n != null ? Number(n).toLocaleString() : '\u2014';
+        const pctBadge = r.perfect_match_pct != null
+          ? `<span class="badge ${r.status_color === 'danger' ? 'bg-danger' : (r.status_color === 'warning' ? '' : 'bg-success')}"
+                   style="${r.status_color === 'warning' ? 'background:#f59e0b;color:#000' : ''}">
+               ${Number(r.perfect_match_pct).toFixed(2)}%
+             </span>`
+          : '\u2014';
+        html += `<tr class="${r.status_color === 'danger' ? 'table-danger' : ''}">
+          <td><small>${r.run_at || '\u2014'}</small></td>
+          <td><small class="text-muted">${r.baseline_description || '\u2014'}</small></td>
+          <td class="text-center">${fmt(r.rows_compared)}</td>
+          <td class="text-center">${pctBadge}</td>
+          <td class="text-center">${fmt(r.conflicting_values)}</td>
+          <td class="text-center">${fmt(r.missing_from_a)} / ${fmt(r.missing_from_b)}</td>
+        </tr>`;
+      });
+      html += '</tbody></table>';
+      inner.innerHTML = html;
+      inner.dataset.loaded = '1';
+    })
+    .catch(e => { inner.innerHTML = `<div class="p-2 text-danger">${e}</div>`; });
+}
+
 // ── Alert tab helpers ───────────────────────────────────────────────────────
 function loadAlertPayload() {
   fetch('/api/alert')
@@ -2017,7 +2292,7 @@ function saveAlertConfig() {
   fetch('/api/alert/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ webhook_url: url, enabled })
+    body: JSON.stringify({ webhook_url: url, enabled, changed_by: getChangedBy() })
   })
   .then(r => r.json())
   .then(d => d.ok
@@ -2051,21 +2326,6 @@ function showToast(msg, title='ETL Monitor', isError=false) {
   new bootstrap.Toast(el, { delay: 4000 }).show();
 }
 
-function filterTests(status, el) {
-    // Scope active-state changes to THIS tab's pills only
-    document.querySelectorAll('#tab-tests .filter-pill').forEach(p => p.classList.remove('active'));
-    el.classList.add('active');
-    document.querySelectorAll('#dbtTestsTable tbody tr').forEach(row => {
-        if (status === 'all') {
-            row.style.display = '';
-        } else if (status === 'fail') {
-            row.style.display = row.dataset.testStatus === 'danger' ? '' : 'none';
-        } else {
-            row.style.display = row.dataset.testStatus !== 'danger' ? '' : 'none';
-        }
-    });
-}
-
 function openRangeForModel(modelName) {
   const rangesTab = document.querySelector('[data-bs-target="#tab-ranges"]');
   if (rangesTab) bootstrap.Tab.getOrCreateInstance(rangesTab).show();
@@ -2092,6 +2352,7 @@ function saveRange(id, model) {
     end_record_count_low:     g(`r${id}_end_lo`), end_record_count_high:    g(`r${id}_end_hi`),
     records_added_count_low:  g(`r${id}_add_lo`), records_added_count_high: g(`r${id}_add_hi`),
     elapsed_seconds_low:      g(`r${id}_ela_lo`), elapsed_seconds_high:     g(`r${id}_ela_hi`),
+    changed_by: getChangedBy(),
   };
   fetch('/api/ranges/save', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data) })
     .then(r => r.json())
@@ -2234,9 +2495,11 @@ def index():
         fr30        = failure_rates(30)
         ranges      = get_pipeline_ranges()
         dbt_models  = dbt_model_executions()
-        dbt_tests   = dbt_test_executions()
-        t_sql       = test_sql_results()
         lineage     = lineage_summary()
+        range_audit = range_audit_log()
+        range_audit_models = distinct_range_audit_models()
+        alert_audit = alert_config_audit_log()
+        transform_audit = transformation_audit_latest()
         health      = overall_health()
         alert_cfg   = get_alert_config()
         now         = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
@@ -2254,9 +2517,11 @@ def index():
         fr30=fr30,
         ranges=ranges,
         dbt_models=dbt_models,
-        dbt_tests=dbt_tests,
-        test_sql=t_sql,
         lineage=lineage,
+        range_audit=range_audit,
+        range_audit_models=range_audit_models,
+        alert_audit=alert_audit,
+        transform_audit=transform_audit,
         health=health,
         alert_cfg=alert_cfg,
         now=now,
@@ -2280,6 +2545,15 @@ def api_model_history(model_name):
             for k in ('start_time', 'end_time', 'created_at'):
                 if r.get(k):
                     r[k] = str(r[k])[:19]
+        return jsonify({'ok': True, 'rows': rows})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)})
+
+
+@app.route('/api/transform-audit/<path:model_name>')
+def api_transform_audit_history(model_name):
+    try:
+        rows = transformation_audit_history(model_name)
         return jsonify({'ok': True, 'rows': rows})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)})
@@ -2316,6 +2590,7 @@ def api_save_range():
     try:
         range_id   = data.get('id')
         model_name = data.get('model_name', '')
+        changed_by = (data.get('changed_by') or '').strip() or None
         old_rows   = query("SELECT * FROM dbo.pipeline_ranges WHERE id = ?", [range_id])
         old        = old_rows[0] if old_rows else {}
         fields = [
@@ -2343,14 +2618,29 @@ def api_save_range():
             data.get('elapsed_seconds_low'),     data.get('elapsed_seconds_high'),
             range_id,
         ])
-        audit_sql = "INSERT INTO dbo.pipeline_range_audit (model_name,field_name,old_value,new_value) VALUES (?,?,?,?)"
+        # changed_by falls back to SYSTEM_USER (the shared SQL login) only
+        # when the browser hasn't set a name via the header "person" button —
+        # an explicit human name is far more useful in the audit log.
+        if changed_by:
+            audit_sql = """
+                INSERT INTO dbo.pipeline_range_audit (model_name,field_name,old_value,new_value,changed_by)
+                VALUES (?,?,?,?,?)
+            """
+        else:
+            audit_sql = """
+                INSERT INTO dbo.pipeline_range_audit (model_name,field_name,old_value,new_value)
+                VALUES (?,?,?,?)
+            """
         for data_key, db_col in fields:
             new_val = data.get(data_key)
             old_val = old.get(db_col)
             if str(old_val) != str(new_val):
-                execute(audit_sql, [model_name, data_key,
-                                    str(old_val) if old_val is not None else None,
-                                    str(new_val) if new_val is not None else None])
+                params = [model_name, data_key,
+                          str(old_val) if old_val is not None else None,
+                          str(new_val) if new_val is not None else None]
+                if changed_by:
+                    params.append(changed_by)
+                execute(audit_sql, params)
         return jsonify({'ok': True})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)})
@@ -2382,10 +2672,37 @@ def api_alert():
 def api_save_alert_config():
     data = request.get_json()
     try:
-        save_alert_config(
-            webhook_url=data.get('webhook_url', '').strip() or None,
-            enabled=bool(data.get('enabled', False)),
-        )
+        changed_by  = (data.get('changed_by') or '').strip() or None
+        new_url     = data.get('webhook_url', '').strip() or None
+        new_enabled = bool(data.get('enabled', False))
+
+        old = get_alert_config()
+
+        if changed_by:
+            audit_sql = """
+                INSERT INTO dbo.pipeline_range_audit (model_name,field_name,old_value,new_value,changed_by)
+                VALUES (?,?,?,?,?)
+            """
+        else:
+            audit_sql = """
+                INSERT INTO dbo.pipeline_range_audit (model_name,field_name,old_value,new_value)
+                VALUES (?,?,?,?)
+            """
+
+        def log_change(field_name, old_val, new_val):
+            if str(old_val) == str(new_val):
+                return
+            params = ['(Alert Config)', field_name,
+                      str(old_val) if old_val is not None else None,
+                      str(new_val) if new_val is not None else None]
+            if changed_by:
+                params.append(changed_by)
+            execute(audit_sql, params)
+
+        log_change('webhook_url', old.get('webhook_url'), new_url)
+        log_change('enabled',     bool(old.get('enabled')), new_enabled)
+
+        save_alert_config(webhook_url=new_url, enabled=new_enabled)
         return jsonify({'ok': True})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)})

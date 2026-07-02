@@ -49,9 +49,8 @@ typed AS (
         teams__away__is_winner                     AS away_is_winner,
 
         -- Venue
-        venue__id                                 AS venue_id,
-        venue__name                               AS venue_name,
-
+		COALESCE(NULLIF(LTRIM(RTRIM(venue__id)), ''), '') AS venue_id,
+		COALESCE(NULLIF(LTRIM(RTRIM(venue__name)), ''), '') AS venue_name,
         -- Game metadata
         game_number,
         double_header,
