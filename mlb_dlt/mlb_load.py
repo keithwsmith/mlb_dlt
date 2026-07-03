@@ -103,6 +103,33 @@ def get_valid_game_pks_from_dw() -> set:
         return set()
 
 
+def get_loaded_pitch_game_pks() -> set:
+    """
+    Games that already have play_events (pitch-level) data loaded.
+    The previous version of get_valid_game_pks_from_dw()'s docstring claimed
+    this filtering already happened — it didn't; that function only checks
+    dw.games for schedule/status validity, never whether pitches for that
+    game were already loaded. This is the actual "skip already-loaded
+    games" check. Now that play_events uses write_disposition="merge"
+    (see play_events_resource), re-processing an already-loaded game is
+    no longer incorrect — just wasted API calls — so this is an
+    efficiency filter, not a correctness one.
+    """
+    try:
+        conn = pyodbc.connect(DW_CONNECTION_STRING, timeout=10)
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT game_pk FROM dw.play_events")
+        rows = cursor.fetchall()
+        conn.close()
+        result = set(r[0] for r in rows) if rows else set()
+        print(f"[dw.play_events] {len(result)} games already have pitch data loaded.")
+        return result
+    except pyodbc.Error as e:
+        print(f"Could not query loaded game_pks from dw.play_events: {e}")
+        print("   Falling back to empty set — no games will be skipped.")
+        return set()
+
+
 # ----------------------------
 # HTTP helper
 # ----------------------------
@@ -775,7 +802,11 @@ def stats_resource(start_year: int = None, end_year: int = None):
 # ----------------------------
 # Play Events (incremental)
 # ----------------------------
-@dlt.resource(name="play_events", write_disposition="append")
+@dlt.resource(
+    name="play_events",
+    write_disposition="merge",
+    primary_key=("gamePk", "playId"),
+)
 def play_events_resource(start_year: int = None, end_year: int = None):
     user_provided_range = start_year is not None or end_year is not None
     current_year = datetime.now().year
@@ -825,12 +856,24 @@ def play_events_resource(start_year: int = None, end_year: int = None):
                         all_games.append((year, game_pk))
 
     # Filter to only game_pks that exist in dw.games — guarantees dbt
-    # relationship tests pass. Also skips games already loaded.
+    # relationship tests pass.
     valid_pks = get_valid_game_pks_from_dw()
     before = len(all_games)
     all_games = [(y, pk) for y, pk in all_games if pk in valid_pks]
     print(f"{before} total Final games from schedule, "
-          f"{len(all_games)} exist in dw.games and will be loaded...")
+          f"{len(all_games)} exist in dw.games...")
+
+    # Skip games whose pitches are already loaded — an efficiency filter,
+    # not a correctness one, now that play_events uses merge disposition
+    # (see get_loaded_pitch_game_pks docstring for why this is separate
+    # from the valid_pks filter above). Explicit --start-year/--end-year
+    # backfills still go through this same filter; pass force_reload=True
+    # below (or just query/delete the specific game_pks first) if you
+    # ever need to deliberately reprocess an already-loaded game.
+    loaded_pks = get_loaded_pitch_game_pks()
+    before = len(all_games)
+    all_games = [(y, pk) for y, pk in all_games if pk not in loaded_pks]
+    print(f"{before} candidate games, {len(all_games)} not yet loaded and will be fetched...")
 
     if not all_games:
         print("Nothing new to load.")

@@ -22,6 +22,7 @@ import urllib.request
 from datetime import datetime, timedelta
 import json
 import threading
+import ai_anomaly   # statistical anomaly detection + predictive trend alerts
 
 
 def _parse_dbt_node_id(node_id):
@@ -441,10 +442,27 @@ def pipeline_status_summary():
             if (run.get('status') or '').lower() == 'success' and not run['issues']
             else []
         )
+
+        # ── AI anomaly detection / predictive trend alerts ──────────────
+        # Only worth running against successful runs with no hard issues
+        # already found — a failed/out-of-range run doesn't need a
+        # statistical opinion on top of the problem it already has.
+        if (run.get('status') or '').lower() == 'success' and not run['issues']:
+            run['ai_warnings'] = ai_anomaly.check_statistical_anomaly(run, query)
+            run['predictive_warnings'] = ai_anomaly.check_predictive_trend(run['model_name'], query)
+        else:
+            run['ai_warnings'] = []
+            run['predictive_warnings'] = []
+
         if (run['status'] or '').lower() in ('fail', 'failed', 'failure', 'error') or run['issues']:
             run['status_color'] = 'danger'
-        elif run['zero_warnings'] or run['recon_warnings']:
+        elif run['zero_warnings'] or run['recon_warnings'] or run['ai_warnings']:
             run['status_color'] = 'warning'
+        elif run['predictive_warnings']:
+            # Early warning only — trend is drifting but hasn't broken
+            # anything yet. Kept visually distinct from amber/red so it
+            # doesn't get "alert fatigue"-desensitized the same way.
+            run['status_color'] = 'info'
         else:
             run['status_color'] = 'success'
 
@@ -790,12 +808,14 @@ def build_alert_payload(runs, health):
     """Build the structured alert JSON payload consumed by external systems."""
     reds    = [r for r in runs if r['status_color'] == 'danger']
     ambers  = [r for r in runs if r['status_color'] == 'warning']
+    infos   = [r for r in runs if r['status_color'] == 'info']
     return {
         'generated_at': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
         'health':       health,
         'total_models': len(runs),
         'red_count':    len(reds),
         'amber_count':  len(ambers),
+        'info_count':   len(infos),
         'failures': [
             {
                 'model':   r['model_name'],
@@ -821,6 +841,24 @@ def build_alert_payload(runs, health):
                 'warnings': r['recon_warnings'],
             }
             for r in ambers if r.get('recon_warnings')
+        ],
+        # ── AI statistical anomalies (seasonality-aware, robust z-score) ──
+        'ai_anomaly_warnings': [
+            {
+                'model':    r['model_name'],
+                'layer':    r.get('model_layer'),
+                'warnings': r['ai_warnings'],
+            }
+            for r in runs if r.get('ai_warnings')
+        ],
+        # ── Predictive trend alerts — early warning, not yet a breach ─────
+        'predictive_alerts': [
+            {
+                'model':    r['model_name'],
+                'layer':    r.get('model_layer'),
+                'warnings': r['predictive_warnings'],
+            }
+            for r in runs if r.get('predictive_warnings')
         ],
     }
 
@@ -903,6 +941,10 @@ TEMPLATE = r"""
   .zero-badge  { background:#f59e0b22; color:#f59e0b; border:1px solid #f59e0b55;
                  border-radius:4px; font-size:.7rem; padding:1px 6px; margin:1px; display:inline-block; }
   .recon-badge { background:#a78bfa22; color:#a78bfa; border:1px solid #a78bfa55;
+                 border-radius:4px; font-size:.7rem; padding:1px 6px; margin:1px; display:inline-block; }
+  .ai-badge    { background:#06b6d422; color:#06b6d4; border:1px solid #06b6d455;
+                 border-radius:4px; font-size:.7rem; padding:1px 6px; margin:1px; display:inline-block; }
+  .predictive-badge { background:#3b82f622; color:#60a5fa; border:1px solid #3b82f655;
                  border-radius:4px; font-size:.7rem; padding:1px 6px; margin:1px; display:inline-block; }
   .btn-sm-custom { font-size:.75rem; padding:3px 10px; }
   input[type=number],input[type=url],input[type=text] {
@@ -1004,6 +1046,15 @@ TEMPLATE = r"""
         </div>
       </div>
     </div>
+    <div class="col-6 col-md-3">
+      <div class="stat-card" style="cursor:pointer" onclick="showAiInsights()" title="Click to see full details">
+        <div class="text-muted" style="font-size:.8rem">AI INSIGHTS</div>
+        <div class="stat-val" style="color:#06b6d4">{{ (runs|selectattr('ai_warnings')|list|length) + (runs|selectattr('status_color','eq','info')|list|length) }}</div>
+        <div style="font-size:.8rem;color:#9aa0b4;margin-top:4px">
+          <i class="bi bi-robot me-1"></i>Statistical anomalies &amp; predictive trend alerts
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- TABS -->
@@ -1047,6 +1098,57 @@ TEMPLATE = r"""
 
     <!-- ── PIPELINE STATUS ── -->
     <div class="tab-pane fade show active" id="tab-pipeline">
+
+      <!-- AI INSIGHTS DETAIL PANEL — full text, no hovering required -->
+      {% set ai_flagged   = runs|selectattr('ai_warnings')|list %}
+      {% set pred_flagged = runs|selectattr('predictive_warnings')|list %}
+      {% if ai_flagged or pred_flagged %}
+      <div class="card mb-3" id="aiInsightsPanel">
+        <div class="card-header d-flex justify-content-between align-items-center" style="cursor:pointer"
+             data-bs-toggle="collapse" data-bs-target="#aiInsightsBody">
+          <span><i class="bi bi-robot me-2"></i>AI Insights — Statistical Anomalies &amp; Predictive Trend Alerts</span>
+          <span class="text-muted" style="font-size:.8rem">
+            {{ ai_flagged|length }} statistical · {{ pred_flagged|length }} predictive
+            <i class="bi bi-chevron-down ms-2"></i>
+          </span>
+        </div>
+        <div class="collapse show" id="aiInsightsBody">
+          <div class="card-body p-0">
+            <div class="table-responsive" style="max-height:320px; overflow-y:auto">
+            <table class="table table-sm mb-0">
+              <thead><tr>
+                <th style="width:16%">Model</th><th style="width:8%">Layer</th>
+                <th style="width:10%">Type</th><th>Detail</th>
+              </tr></thead>
+              <tbody>
+              {% for r in ai_flagged %}
+                {% for w in r.ai_warnings %}
+                <tr>
+                  <td><strong>{{ r.model_name }}</strong></td>
+                  <td><span class="badge-layer">{{ r.model_layer }}</span></td>
+                  <td><span class="ai-badge"><i class="bi bi-robot me-1"></i>Statistical</span></td>
+                  <td style="font-size:.85rem">{{ w }}</td>
+                </tr>
+                {% endfor %}
+              {% endfor %}
+              {% for r in pred_flagged %}
+                {% for w in r.predictive_warnings %}
+                <tr>
+                  <td><strong>{{ r.model_name }}</strong></td>
+                  <td><span class="badge-layer">{{ r.model_layer }}</span></td>
+                  <td><span class="predictive-badge"><i class="bi bi-graph-up-arrow me-1"></i>Predictive</span></td>
+                  <td style="font-size:.85rem">{{ w }}</td>
+                </tr>
+                {% endfor %}
+              {% endfor %}
+              </tbody>
+            </table>
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
       <div class="card">
         <div class="card-header d-flex justify-content-between">
           <span><i class="bi bi-pipe me-2"></i>Latest Pipeline Run per Model</span>
@@ -1063,7 +1165,7 @@ TEMPLATE = r"""
             <tbody>
             {% for r in runs %}
             <tr class="{{ 'table-danger' if r.status_color == 'danger' else ('table-warning bg-opacity-10' if r.status_color == 'warning' else '') }}"
-                style="{{ 'background:rgba(245,158,11,.07)' if r.status_color == 'warning' else '' }}">
+                style="{{ 'background:rgba(245,158,11,.07)' if r.status_color == 'warning' else ('background:rgba(59,130,246,.07)' if r.status_color == 'info' else '') }}">
               <td>
                 <strong>{{ r.model_name }}</strong><br>
                 <small class="text-muted">{{ r.run_id }}</small>
@@ -1075,6 +1177,10 @@ TEMPLATE = r"""
                 {% elif r.status_color == 'warning' %}
                   <span class="badge" style="background:#f59e0b;color:#000">
                     <i class="bi bi-exclamation-triangle me-1"></i>{{ r.status }}
+                  </span>
+                {% elif r.status_color == 'info' %}
+                  <span class="badge" style="background:#3b82f6;color:#fff">
+                    <i class="bi bi-graph-up-arrow me-1"></i>{{ r.status }}
                   </span>
                 {% else %}
                   <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>{{ r.status }}</span>
@@ -1106,6 +1212,16 @@ TEMPLATE = r"""
                 {% for w in r.recon_warnings %}
                   <span class="recon-badge" title="{{ w }}">
                     <i class="bi bi-calculator me-1"></i>reconciliation mismatch
+                  </span>
+                {% endfor %}
+                {% for w in r.ai_warnings %}
+                  <span class="ai-badge" title="{{ w }} — statistical baseline is computed per day-of-week from recent history">
+                    <i class="bi bi-robot me-1"></i>{{ w }}
+                  </span>
+                {% endfor %}
+                {% for w in r.predictive_warnings %}
+                  <span class="predictive-badge" title="{{ w }} — early warning based on trend, not yet a threshold breach">
+                    <i class="bi bi-graph-up-arrow me-1"></i>{{ w }}
                   </span>
                 {% endfor %}
               </td>
@@ -2324,6 +2440,18 @@ function showToast(msg, title='ETL Monitor', isError=false) {
   el.classList.toggle('text-bg-danger', isError);
   el.classList.toggle('text-bg-dark',  !isError);
   new bootstrap.Toast(el, { delay: 4000 }).show();
+}
+
+function showAiInsights() {
+  const pipelineTab = document.querySelector('[data-bs-target="#tab-pipeline"]');
+  if (pipelineTab) bootstrap.Tab.getOrCreateInstance(pipelineTab).show();
+  setTimeout(() => {
+    const body = document.getElementById('aiInsightsBody');
+    if (body && !body.classList.contains('show')) {
+      bootstrap.Collapse.getOrCreateInstance(body).show();
+    }
+    document.getElementById('aiInsightsPanel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 150);
 }
 
 function openRangeForModel(modelName) {

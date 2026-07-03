@@ -664,6 +664,57 @@ def generate_docs():
     run_command(dbt_cmd("docs generate"), "dbt_docs", allow_fail=True)
 
 
+def run_custom_audits():
+    """Run the content-correctness audits (reconciliation + business-logic
+    checks defined in macros/audits/custom_audits.sql) via dbt run-operation.
+
+    Separate from run_all_tests()/check_test_results(): those exercise
+    dbt's own generic/singular test framework (schema tests, store_failures
+    into test_failures). This calls the custom macro-based audits directly
+    — full-table reconciliation checks (e.g. pitch counts between
+    fact_at_bats and fact_pitches) and business-logic consistency checks
+    (e.g. is_no_hitter/is_shutout flags vs. actual runs/hits) that aren't
+    expressible as ordinary dbt schema tests. Each check logs its own row
+    into silver.test_sql (detail) and dbo.transformation_audit_log (summary,
+    surfaced on ETLMonitor's Model Audit tab) as it runs.
+
+    Requires fact_games, fact_pitches, fact_at_bats, and fact_batted_balls
+    to already exist — must run after facts/marts, not before. allow_fail
+    is True: an audit finding failures is expected/informational (that's
+    the point of the check), not a reason to halt the pipeline. A non-zero
+    exit here means the run-operation itself errored (e.g. a compile error
+    in the macro), not that a check found bad data.
+    """
+    print("\n================ CUSTOM AUDITS ================")
+
+    layer = "custom_audit"
+    model_name = "run_custom_audits"
+    start_time = datetime.utcnow()
+
+    success, stderr = run_command(
+        dbt_cmd("run-operation run_custom_audits"),
+        "run_custom_audits",
+        allow_fail=True,
+        max_retries=0,   # same reasoning as dbt test — don't retry a check
+    )
+
+    end_time = datetime.utcnow()
+
+    log_pipeline_event(
+        model_name=model_name,
+        model_layer=layer,
+        status="SUCCESS" if success else "FAILURE",
+        start_record_count=None,
+        end_record_count=None,
+        start_time=start_time,
+        end_time=end_time,
+        error_message=stderr if not success else None,
+    )
+
+    if not success:
+        print(" [run_custom_audits] completed with errors — see logs for details")
+
+
 def print_pipeline_summary():
     """Query the pipeline table and print a summary for this run."""
     query = """
@@ -824,6 +875,7 @@ def run_pipeline():
 
     run_all_tests()
     check_test_results()
+    run_custom_audits()
     generate_docs()
 
     pipeline_end = datetime.utcnow()
