@@ -12,10 +12,10 @@ from urllib3.util.retry import Retry
 # ----------------------------
 DW_CONNECTION_STRING = (
     "DRIVER={ODBC Driver 17 for SQL Server};"
-    "SERVER=10.0.0.54;"
+    "SERVER=KEITH-PERSONAL;"
     "DATABASE=dlt;"
-    "username = hlabs;"
-    "password = 1234pass;"
+    "username = sa;"
+    "password = pass0123;"
     "Trusted_Connection=yes;"
     "trust_server_certificate = true;"
 )
@@ -29,6 +29,7 @@ def build_session():
     s.mount("https://", adapter)
     s.mount("http://", adapter)
     return s
+
 
 SESSION = build_session()
 
@@ -144,7 +145,7 @@ def get_json(url, params=None):
 # ----------------------------
 @dlt.resource(
     name="player_transactions",
-    write_disposition="append",primary_key=("transaction_id")
+    write_disposition="append", primary_key=("transaction_id")
 )
 def transactions_resource(start_year: int = None, end_year: int = None):
     user_provided_range = start_year is not None or end_year is not None
@@ -182,11 +183,11 @@ def transactions_resource(start_year: int = None, end_year: int = None):
 
         for txn in data.get("transactions", []):
             # `or {}` guards against explicit None from the API
-            player    = txn.get("person") or {}
+            player = txn.get("person") or {}
             from_team = txn.get("fromTeam") or {}
-            to_team   = txn.get("toTeam") or {}
+            to_team = txn.get("toTeam") or {}
 
-            player_id   = player.get("id")
+            player_id = player.get("id")
             player_name = player.get("fullName")
             description = txn.get("description") or ""
             txn_category = "player" if player_id else "team"
@@ -200,21 +201,21 @@ def transactions_resource(start_year: int = None, end_year: int = None):
 
             # BUG FIX: yield is outside the if block — all records are yielded
             yield {
-                "transaction_id":       txn.get("id"),
-                "date":                 txn.get("date"),
-                "effective_date":       txn.get("effectiveDate"),
-                "resolution_date":      txn.get("resolutionDate"),
-                "type_code":            txn.get("typeCode"),
-                "type_desc":            txn.get("typeDesc"),
-                "description":          description,
+                "transaction_id": txn.get("id"),
+                "date": txn.get("date"),
+                "effective_date": txn.get("effectiveDate"),
+                "resolution_date": txn.get("resolutionDate"),
+                "type_code": txn.get("typeCode"),
+                "type_desc": txn.get("typeDesc"),
+                "description": description,
                 "transaction_category": txn_category,
-                "has_player":           player_id is not None,
-                "player_id":            player_id,
-                "player_name":          player_name,
-                "from_team_id":         from_team.get("id"),
-                "from_team_name":       from_team.get("name"),
-                "to_team_id":           to_team.get("id"),
-                "to_team_name":         to_team.get("name"),
+                "has_player": player_id is not None,
+                "player_id": player_id,
+                "player_name": player_name,
+                "from_team_id": from_team.get("id"),
+                "from_team_name": from_team.get("name"),
+                "to_team_id": to_team.get("id"),
+                "to_team_name": to_team.get("name"),
             }
 
 
@@ -236,7 +237,7 @@ def seasons_resource():
 def teams_resource(start_year: int = None, end_year: int = None):
     current_year = datetime.now().year
     start_year = start_year or 1960
-    end_year   = end_year   or current_year
+    end_year = end_year or current_year
 
     seen_ids = set()
     for year in range(start_year, end_year + 1):
@@ -280,28 +281,28 @@ def fetch_game_pbp(year, game_pk):
 
         for play in pbp.get("allPlays", []):
             at_bat_index = play.get("atBatIndex")
-            matchup      = play.get("matchup", {})
-            batter       = matchup.get("batter", {})
-            pitcher      = matchup.get("pitcher", {})
-            batter_hand  = matchup.get("batSide", {})
+            matchup = play.get("matchup", {})
+            batter = matchup.get("batter", {})
+            pitcher = matchup.get("pitcher", {})
+            batter_hand = matchup.get("batSide", {})
             pitcher_hand = matchup.get("pitchHand", {})
 
             for event in play.get("playEvents", []):
                 if not event.get("isPitch"):
                     continue
 
-                details    = event.get("details", {})
+                details = event.get("details", {})
                 is_in_play = details.get("isInPlay", False)
 
-                event["season"]       = year
-                event["gamePk"]       = game_pk
-                event["atBatIndex"]   = at_bat_index
-                event["isInPlay"]     = is_in_play
-                event["batter_id"]    = batter.get("id")
-                event["batter_name"]  = batter.get("fullName")
-                event["pitcher_id"]   = pitcher.get("id")
+                event["season"] = year
+                event["gamePk"] = game_pk
+                event["atBatIndex"] = at_bat_index
+                event["isInPlay"] = is_in_play
+                event["batter_id"] = batter.get("id")
+                event["batter_name"] = batter.get("fullName")
+                event["pitcher_id"] = pitcher.get("id")
                 event["pitcher_name"] = pitcher.get("fullName")
-                event["batter_side"]  = batter_hand.get("code")
+                event["batter_side"] = batter_hand.get("code")
                 event["pitcher_hand"] = pitcher_hand.get("code")
 
                 events.append(event)
@@ -360,23 +361,23 @@ def award_recipients_resource():
                 continue
 
             for award in data.get("awards", []):
-                player   = award.get("player", {})
+                player = award.get("player", {})
                 position = player.get("primaryPosition", {})
-                team     = award.get("team", {})
+                team = award.get("team", {})
 
                 yield {
-                    "award_id":              award.get("id"),
-                    "award_name":            award.get("name"),
-                    "award_date":            award.get("date"),
-                    "season":                award.get("season") or year,
-                    "team_id":               team.get("id"),
-                    "player_id":             player.get("id"),
-                    "player_name":           player.get("nameFirstLast"),
-                    "position_code":         position.get("code"),
-                    "position_name":         position.get("name"),
-                    "position_type":         position.get("type"),
+                    "award_id": award.get("id"),
+                    "award_name": award.get("name"),
+                    "award_date": award.get("date"),
+                    "season": award.get("season") or year,
+                    "team_id": team.get("id"),
+                    "player_id": player.get("id"),
+                    "player_name": player.get("nameFirstLast"),
+                    "position_code": position.get("code"),
+                    "position_name": position.get("name"),
+                    "position_type": position.get("type"),
                     "position_abbreviation": position.get("abbreviation"),
-                    "notes":                 award.get("notes"),
+                    "notes": award.get("notes"),
                 }
 
 
@@ -433,7 +434,7 @@ def games_resource(start_year: int = None, end_year: int = None):
         params = {"sportId": 1, "season": year}
         if start_date_str and year == start_year:
             params["startDate"] = start_date_str
-            params["endDate"]   = f"{year}-12-31"
+            params["endDate"] = f"{year}-12-31"
 
         schedule = get_json(f"{BASE_URL}/schedule", params)
 
@@ -483,7 +484,7 @@ def get_games_missing_umpires(start_year: int = 2023):
 
 @dlt.resource(
     name="umpires",
-    write_disposition="merge",   # changed from append
+    write_disposition="merge",  # changed from append
     primary_key=["game_pk", "official_type"]
 )
 def umpires_resource(start_year: int = None, end_year: int = None):
@@ -510,10 +511,10 @@ def umpires_resource(start_year: int = None, end_year: int = None):
             official = umpire.get("official", {})
             loaded += 1
             yield {
-                "game_pk":       game_pk,
+                "game_pk": game_pk,
                 "official_type": umpire.get("officialType"),
-                "official_id":   official.get("id"),
-                "full_name":     official.get("fullName"),
+                "official_id": official.get("id"),
+                "full_name": official.get("fullName"),
             }
 
     print(f"Yielded {loaded} umpire records.")
@@ -529,72 +530,72 @@ def fetch_game_details(game):
 
     # ── 1. Live feed (v1.1) ─────────────────────────────────────────
     try:
-        feed       = get_json(f"{BASE_URL.replace('/v1/', '/v1.1/')}/game/{game_pk}/feed/live")
-        game_data  = feed.get("gameData", {})
-        live_data  = feed.get("liveData", {})
-        weather    = game_data.get("weather", {})
-        game_info  = game_data.get("gameInfo", {})
-        decisions  = live_data.get("decisions", {})
-        winner     = decisions.get("winner", {})
-        loser      = decisions.get("loser", {})
-        save       = decisions.get("save", {})
-        boxscore   = live_data.get("boxscore", {})
-        teams_box  = boxscore.get("teams", {})
+        feed = get_json(f"{BASE_URL.replace('/v1/', '/v1.1/')}/game/{game_pk}/feed/live")
+        game_data = feed.get("gameData", {})
+        live_data = feed.get("liveData", {})
+        weather = game_data.get("weather", {})
+        game_info = game_data.get("gameInfo", {})
+        decisions = live_data.get("decisions", {})
+        winner = decisions.get("winner", {})
+        loser = decisions.get("loser", {})
+        save = decisions.get("save", {})
+        boxscore = live_data.get("boxscore", {})
+        teams_box = boxscore.get("teams", {})
 
-        home_stats    = teams_box.get("home", {}).get("teamStats", {})
-        away_stats    = teams_box.get("away", {}).get("teamStats", {})
-        home_batting  = home_stats.get("batting", {})
-        away_batting  = away_stats.get("batting", {})
+        home_stats = teams_box.get("home", {}).get("teamStats", {})
+        away_stats = teams_box.get("away", {}).get("teamStats", {})
+        home_batting = home_stats.get("batting", {})
+        away_batting = away_stats.get("batting", {})
         home_pitching = home_stats.get("pitching", {})
         away_pitching = away_stats.get("pitching", {})
 
         result.update({
-            "weather_condition":               weather.get("condition"),
-            "weather_temp":                    weather.get("temp"),
-            "weather_wind":                    weather.get("wind"),
-            "attendance":                      game_info.get("attendance"),
-            "first_pitch":                     game_info.get("firstPitch"),
-            "game_duration_minutes":           game_info.get("gameDurationMinutes"),
-            "winning_pitcher_id":              winner.get("id"),
-            "winning_pitcher_name":            winner.get("fullName"),
-            "losing_pitcher_id":               loser.get("id"),
-            "losing_pitcher_name":             loser.get("fullName"),
-            "save_pitcher_id":                 save.get("id"),
-            "save_pitcher_name":               save.get("fullName"),
-            "home_runs":                       home_batting.get("runs"),
-            "home_hits":                       home_batting.get("hits"),
-            "home_doubles":                    home_batting.get("doubles"),
-            "home_triples":                    home_batting.get("triples"),
-            "home_home_runs":                  home_batting.get("homeRuns"),
-            "home_rbi":                        home_batting.get("rbi"),
-            "home_stolen_bases":               home_batting.get("stolenBases"),
-            "home_strikeouts":                 home_batting.get("strikeOuts"),
-            "home_walks":                      home_batting.get("baseOnBalls"),
-            "home_left_on_base":               home_batting.get("leftOnBase"),
-            "away_runs":                       away_batting.get("runs"),
-            "away_hits":                       away_batting.get("hits"),
-            "away_doubles":                    away_batting.get("doubles"),
-            "away_triples":                    away_batting.get("triples"),
-            "away_home_runs":                  away_batting.get("homeRuns"),
-            "away_rbi":                        away_batting.get("rbi"),
-            "away_stolen_bases":               away_batting.get("stolenBases"),
-            "away_strikeouts":                 away_batting.get("strikeOuts"),
-            "away_walks":                      away_batting.get("baseOnBalls"),
-            "away_left_on_base":               away_batting.get("leftOnBase"),
-            "home_pitching_strikeouts":        home_pitching.get("strikeOuts"),
-            "home_pitching_walks":             home_pitching.get("baseOnBalls"),
-            "home_pitching_hits_allowed":      home_pitching.get("hits"),
-            "home_pitching_runs_allowed":      home_pitching.get("runs"),
-            "home_pitching_earned_runs":       home_pitching.get("earnedRuns"),
+            "weather_condition": weather.get("condition"),
+            "weather_temp": weather.get("temp"),
+            "weather_wind": weather.get("wind"),
+            "attendance": game_info.get("attendance"),
+            "first_pitch": game_info.get("firstPitch"),
+            "game_duration_minutes": game_info.get("gameDurationMinutes"),
+            "winning_pitcher_id": winner.get("id"),
+            "winning_pitcher_name": winner.get("fullName"),
+            "losing_pitcher_id": loser.get("id"),
+            "losing_pitcher_name": loser.get("fullName"),
+            "save_pitcher_id": save.get("id"),
+            "save_pitcher_name": save.get("fullName"),
+            "home_runs": home_batting.get("runs"),
+            "home_hits": home_batting.get("hits"),
+            "home_doubles": home_batting.get("doubles"),
+            "home_triples": home_batting.get("triples"),
+            "home_home_runs": home_batting.get("homeRuns"),
+            "home_rbi": home_batting.get("rbi"),
+            "home_stolen_bases": home_batting.get("stolenBases"),
+            "home_strikeouts": home_batting.get("strikeOuts"),
+            "home_walks": home_batting.get("baseOnBalls"),
+            "home_left_on_base": home_batting.get("leftOnBase"),
+            "away_runs": away_batting.get("runs"),
+            "away_hits": away_batting.get("hits"),
+            "away_doubles": away_batting.get("doubles"),
+            "away_triples": away_batting.get("triples"),
+            "away_home_runs": away_batting.get("homeRuns"),
+            "away_rbi": away_batting.get("rbi"),
+            "away_stolen_bases": away_batting.get("stolenBases"),
+            "away_strikeouts": away_batting.get("strikeOuts"),
+            "away_walks": away_batting.get("baseOnBalls"),
+            "away_left_on_base": away_batting.get("leftOnBase"),
+            "home_pitching_strikeouts": home_pitching.get("strikeOuts"),
+            "home_pitching_walks": home_pitching.get("baseOnBalls"),
+            "home_pitching_hits_allowed": home_pitching.get("hits"),
+            "home_pitching_runs_allowed": home_pitching.get("runs"),
+            "home_pitching_earned_runs": home_pitching.get("earnedRuns"),
             "home_pitching_home_runs_allowed": home_pitching.get("homeRuns"),
-            "home_errors":                     home_batting.get("errors") or home_pitching.get("errors"),
-            "away_pitching_strikeouts":        away_pitching.get("strikeOuts"),
-            "away_pitching_walks":             away_pitching.get("baseOnBalls"),
-            "away_pitching_hits_allowed":      away_pitching.get("hits"),
-            "away_pitching_runs_allowed":      away_pitching.get("runs"),
-            "away_pitching_earned_runs":       away_pitching.get("earnedRuns"),
+            "home_errors": home_batting.get("errors") or home_pitching.get("errors"),
+            "away_pitching_strikeouts": away_pitching.get("strikeOuts"),
+            "away_pitching_walks": away_pitching.get("baseOnBalls"),
+            "away_pitching_hits_allowed": away_pitching.get("hits"),
+            "away_pitching_runs_allowed": away_pitching.get("runs"),
+            "away_pitching_earned_runs": away_pitching.get("earnedRuns"),
             "away_pitching_home_runs_allowed": away_pitching.get("homeRuns"),
-            "away_errors":                     away_batting.get("errors") or away_pitching.get("errors"),
+            "away_errors": away_batting.get("errors") or away_pitching.get("errors"),
         })
     except Exception as e:
         print(f"Live feed failed for {game_pk}: {e}")
@@ -621,7 +622,7 @@ def fetch_game_details(game):
             if not result.get("first_pitch"):
                 result["first_pitch"] = info_map.get("first pitch") or info_map.get("t")
             if not result.get("game_duration_minutes"):
-                duration_raw = info_map.get("t")   # "3:22" format
+                duration_raw = info_map.get("t")  # "3:22" format
                 if duration_raw and ":" in duration_raw:
                     h, m = duration_raw.split(":")
                     result["game_duration_minutes"] = int(h) * 60 + int(m)
@@ -637,44 +638,62 @@ def fetch_game_details(game):
                 w = decisions.get("winner", {})
                 l = decisions.get("loser", {})
                 s = decisions.get("save", {})
-                result["winning_pitcher_id"]   = result.get("winning_pitcher_id")   or w.get("id")
+                result["winning_pitcher_id"] = result.get("winning_pitcher_id") or w.get("id")
                 result["winning_pitcher_name"] = result.get("winning_pitcher_name") or w.get("fullName")
-                result["losing_pitcher_id"]    = result.get("losing_pitcher_id")    or l.get("id")
-                result["losing_pitcher_name"]  = result.get("losing_pitcher_name")  or l.get("fullName")
-                result["save_pitcher_id"]      = result.get("save_pitcher_id")      or s.get("id")
-                result["save_pitcher_name"]    = result.get("save_pitcher_name")    or s.get("fullName")
+                result["losing_pitcher_id"] = result.get("losing_pitcher_id") or l.get("id")
+                result["losing_pitcher_name"] = result.get("losing_pitcher_name") or l.get("fullName")
+                result["save_pitcher_id"] = result.get("save_pitcher_id") or s.get("id")
+                result["save_pitcher_name"] = result.get("save_pitcher_name") or s.get("fullName")
         except Exception as e:
             print(f"Linescore fallback failed for {game_pk}: {e}")
 
     return result
-	
+
 
 def get_game_pks_from_dw(start_year, end_year):
     """
-    Returns game_pks from dw.games scoped to a year range for game_details.
-    Applies the same Final / non-exhibition filter as get_valid_game_pks_from_dw
-    so all three child resources (play_events, umpires, game_details) share
-    identical FK constraints and dbt relationship tests are always satisfied.
+    Returns game_pks from dw.games scoped to a year range for game_details,
+    EXCLUDING game_pks that already have a row in dw.game_details.
+
+    Previously this had no "already loaded" filter at all, unlike
+    get_loaded_pitch_game_pks (play_events) and get_games_missing_umpires
+    (umpires). With no --start-year passed, start_year defaulted to 1960,
+    so every single run re-fetched and re-merged full game history —
+    tens of thousands of games, each costing up to 3 API calls in
+    fetch_game_details (live feed + boxscore/linescore fallbacks) — instead
+    of only the handful of new games since the last run. That's both the
+    slowness and (from MERGE-ing the entire history back into SQL Server
+    every run) the source of the database errors. The NOT EXISTS below
+    makes this incremental like its sibling resources: after the first
+    backfill, only genuinely new game_pks are fetched.
+
+    If you ever need to force-reprocess games that already have details
+    (e.g. to pick up corrected data), delete those specific game_pks from
+    dw.game_details first, or add a force_reload flag — don't remove this
+    filter, or you're back to a full reload every run.
     """
     current_year = datetime.now().year
     start_year = start_year or 1960
-    end_year   = end_year   or current_year
+    end_year = end_year or current_year
 
     conn = pyodbc.connect(DW_CONNECTION_STRING, timeout=10)
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT game_pk
-        FROM dw.games
-        WHERE season BETWEEN ? AND ?
-          AND status__abstract_game_state = 'Final'
-          AND game_type NOT IN ('E', 'A')
+        SELECT g.game_pk
+        FROM dw.games g
+        WHERE g.season BETWEEN ? AND ?
+          AND g.status__abstract_game_state = 'Final'
+          AND g.game_type NOT IN ('E', 'A')
+          AND NOT EXISTS (
+              SELECT 1 FROM dw.game_details gd WHERE gd.game_pk = g.game_pk
+          )
     """, (start_year, end_year))
     rows = cursor.fetchall()
     conn.close()
-    print(f"[game_details] Found {len(rows)} eligible games in dw.games "
-          f"for seasons {start_year}–{end_year}")
+    print(f"[game_details] {len(rows)} games in seasons {start_year}–{end_year} "
+          f"are missing from dw.game_details and will be fetched.")
     return [{"gamePk": r[0]} for r in rows]
-	
+
 
 # ----------------------------
 # Game details resource
@@ -722,7 +741,7 @@ def game_details_resource(start_year: int = None, end_year: int = None):
             for game in games
         }
         batch = []
-        done  = 0
+        done = 0
         total = len(futures)
 
         for future in as_completed(futures):
@@ -750,20 +769,20 @@ def game_details_resource(start_year: int = None, end_year: int = None):
 # ----------------------------
 def get_all_stats(year: int, group: str) -> list:
     all_splits = []
-    limit  = 500
+    limit = 500
     offset = 0
 
     while True:
         data = get_json(
             f"{BASE_URL}/stats",
             {
-                "stats":      "season",
-                "group":      group,
-                "season":     year,
-                "sportIds":   1,
+                "stats": "season",
+                "group": group,
+                "season": year,
+                "sportIds": 1,
                 "playerPool": "All",
-                "limit":      limit,
-                "offset":     offset,
+                "limit": limit,
+                "offset": offset,
             }
         )
         stat_groups = data.get("stats", [])
@@ -773,7 +792,7 @@ def get_all_stats(year: int, group: str) -> list:
         if not splits:
             break
         all_splits.extend(splits)
-        total  = stat_groups[0].get("totalSplits", 0)
+        total = stat_groups[0].get("totalSplits", 0)
         offset += limit
         if offset >= total:
             break
@@ -789,13 +808,13 @@ def get_all_stats(year: int, group: str) -> list:
 def stats_resource(start_year: int = None, end_year: int = None):
     current_year = datetime.now().year
     start_year = start_year or current_year
-    end_year   = end_year   or current_year
+    end_year = end_year or current_year
 
     for year in range(start_year, end_year + 1):
         for group in ["hitting", "pitching", "fielding", "running"]:
             for split in get_all_stats(year, group):
                 split["season"] = year
-                split["group"]  = group
+                split["group"] = group
                 yield split
 
 
@@ -830,7 +849,7 @@ def play_events_resource(start_year: int = None, end_year: int = None):
         params = {"sportId": 1, "season": year}
         if start_date_str and year == start_year:
             params["startDate"] = start_date_str
-            params["endDate"]   = f"{year}-12-31"
+            params["endDate"] = f"{year}-12-31"
         schedule_params.append((year, params))
 
     with ThreadPoolExecutor(max_workers=10) as executor:
@@ -848,7 +867,7 @@ def play_events_resource(start_year: int = None, end_year: int = None):
             for date_entry in schedule.get("dates", []):
                 for game in date_entry.get("games", []):
                     game_pk = game.get("gamePk")
-                    status  = game.get("status", {}).get("abstractGameState")
+                    status = game.get("status", {}).get("abstractGameState")
                     game_type = game.get("gameType", "")
                     if game_type in ("E", "A"):
                         continue
@@ -886,7 +905,7 @@ def play_events_resource(start_year: int = None, end_year: int = None):
             for year, game_pk in all_games
         }
         batch = []
-        done  = 0
+        done = 0
         total = len(futures)
 
         for future in as_completed(futures):
@@ -919,7 +938,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("resource", help="Resource to run (e.g. play_events, games, seasons)")
     parser.add_argument("--start-year", type=int, default=None)
-    parser.add_argument("--end-year",   type=int, default=None)
+    parser.add_argument("--end-year", type=int, default=None)
     args = parser.parse_args()
 
     pipeline = dlt.pipeline(
@@ -927,20 +946,20 @@ if __name__ == "__main__":
         destination="mssql",
         dataset_name="dw"
     )
-    
+
     resources = {
-        "play_events":         lambda: play_events_resource(args.start_year, args.end_year),
-        "games":               lambda: games_resource(args.start_year, args.end_year),
-        "seasons":             seasons_resource,
-        "teams":               lambda: teams_resource(args.start_year, args.end_year),
-        "draft":               draft_resource,
-        "players":             players_resource,
-        "player_stats":        lambda: stats_resource(args.start_year, args.end_year),
-        "rosters":             lambda: rosters_resource(args.start_year, args.end_year),
-        "awards":              award_recipients_resource,
+        "play_events": lambda: play_events_resource(args.start_year, args.end_year),
+        "games": lambda: games_resource(args.start_year, args.end_year),
+        "seasons": seasons_resource,
+        "teams": lambda: teams_resource(args.start_year, args.end_year),
+        "draft": draft_resource,
+        "players": players_resource,
+        "player_stats": lambda: stats_resource(args.start_year, args.end_year),
+        "rosters": lambda: rosters_resource(args.start_year, args.end_year),
+        "awards": award_recipients_resource,
         "player_transactions": lambda: transactions_resource(args.start_year, args.end_year),
-        "umpires":             lambda: umpires_resource(args.start_year, args.end_year),
-        "game_details":        lambda: game_details_resource(args.start_year, args.end_year),
+        "umpires": lambda: umpires_resource(args.start_year, args.end_year),
+        "game_details": lambda: game_details_resource(args.start_year, args.end_year),
     }
 
     if args.resource not in resources:

@@ -20,7 +20,7 @@ from mlb_agent import run_agent
 DBT_PROJECT_DIR = r"C:\Users\Keith\baseball-sql\DBT_BASEBALL_SQLSERVER"
 DBT_PROFILES_DIR = r"C:\Users\Keith\.dbt"
 DBT_TARGET = "prod"
-DBT_THREADS = 4
+DBT_THREADS = 1
 
 MAX_RETRIES = 1
 RETRY_DELAY = 5  # seconds
@@ -39,7 +39,7 @@ LINEAGE_OUTPUT_SCRIPT = r"C:\Users\Keith\PycharmProjects\mlb_lineage\lineage_bui
 # ==========================================================
 DB_CONNECTION = {
     "driver":   "{ODBC Driver 17 for SQL Server}",
-    "server":   "10.0.0.54",
+    "server":   "KEITH-PERSONAL",
     "database": "dlt",
 	"uid": "sa",
 	"pwd": "pass0123"
@@ -456,7 +456,7 @@ def run_all_dimensions():
     completed = set()
     failed = set()
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=1) as executor:
         futures = {}
         for m in DIMENSION_MODELS:
             can_fail = m not in REQUIRED_MODELS
@@ -550,7 +550,7 @@ def run_all_marts(all_completed: set):
             ready.append(model)
 
     if ready:
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=1) as executor:
             futures = {executor.submit(run_model, m, allow_fail=True): m for m in ready}
 
             for future in as_completed(futures):
