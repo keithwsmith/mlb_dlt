@@ -11,15 +11,14 @@
     over time. Each row represents one "version" of a player while their
     tracked attributes remained constant.
 
-    Change detection:
-      • Roster attributes (position, status, jersey, team) are hashed into
-        a change_hash per player per season/load.
-      • Consecutive identical hashes are collapsed so only genuine state
-        changes produce new rows.
-      • Transaction effective_dates are joined in when the team changed,
-        giving real calendar dates rather than load timestamps.
-
-    Grain: one row per player per distinct attribute state.
+    FIX (edge case): team_move_dates previously grouped transactions by
+    (player_id, to_team_id) and took MIN(effective_date), so a player's
+    SECOND stint with a team (traded away, then traded back) reused the
+    FIRST stint's trade date. Transactions are now numbered per
+    (player_id, to_team_id) with ROW_NUMBER, and each state-change row is
+    matched to the transaction with the same *occurrence number* for that
+    team — the Nth time a player joins team X is matched to the Nth
+    recorded transaction into team X.
 #}
 
 
@@ -95,23 +94,43 @@ state_changes as (
 
 
 -- ============================================================
--- 4. Pull the earliest transaction effective_date for each
---    player + destination team to use as the real effective
---    date when a team change is detected.
+-- 3b. Number each state-change row by which "stint" with its
+--     team_id it represents for that player. A player back
+--     with the same team for a 2nd time gets stint_number = 2.
+-- ============================================================
+state_changes_numbered as (
+    select
+        sc.*,
+        row_number() over (
+            partition by sc.player_id, sc.team_id
+            order by sc.season, sc._dlt_load_id
+        ) as team_stint_number
+    from state_changes sc
+),
+
+
+-- ============================================================
+-- 4. Number every transaction into a given team per player the
+--    same way, so stint N of the roster can be matched to
+--    transaction N into that team.
 -- ============================================================
 team_move_dates as (
     select
         player_id,
         to_team_id              as team_id,
-        min(effective_date)     as move_effective_date
+        effective_date,
+        row_number() over (
+            partition by player_id, to_team_id
+            order by effective_date
+        ) as team_stint_number
     from {{ ref('stg_player_transactions') }}
     where to_team_id is not null
-    group by player_id, to_team_id
 ),
 
 
 -- ============================================================
--- 5. Join transaction dates and build SCD2 window columns.
+-- 5. Join transaction dates by matching stint number and build
+--    SCD2 window columns.
 -- ============================================================
 versioned as (
     select
@@ -128,10 +147,11 @@ versioned as (
         sc.season,
         sc.change_hash,
 
-        -- effective_date: prefer the transaction date; fall back to
-        -- a constructed season start date when no transaction exists.
+        -- effective_date: prefer the matching-stint transaction date;
+        -- fall back to a constructed season start date when no
+        -- transaction exists for this stint.
         coalesce(
-            tmd.move_effective_date,
+            tmd.effective_date,
             cast(cast(sc.season as varchar) + '-01-01' as date)
         ) as effective_date,
 
@@ -141,7 +161,7 @@ versioned as (
             -1,
             lead(
                 coalesce(
-                    tmd.move_effective_date,
+                    tmd.effective_date,
                     cast(cast(sc.season as varchar) + '-01-01' as date)
                 )
             ) over (
@@ -155,10 +175,11 @@ versioned as (
             order by sc.season, sc._dlt_load_id
         ) as version_number
 
-    from state_changes sc
+    from state_changes_numbered sc
     left join team_move_dates tmd
-        on  sc.player_id = tmd.player_id
-        and sc.team_id   = tmd.team_id
+        on  sc.player_id         = tmd.player_id
+        and sc.team_id           = tmd.team_id
+        and sc.team_stint_number = tmd.team_stint_number
 ),
 
 

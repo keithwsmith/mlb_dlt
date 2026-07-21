@@ -252,23 +252,39 @@ def teams_resource(start_year: int = None, end_year: int = None):
 # ----------------------------
 # Draft Picks
 # ----------------------------
-@dlt.resource(name="draft", write_disposition="replace")
+@dlt.resource(
+    name="draft",
+    write_disposition="append",
+    primary_key=("year", "pick_number"),
+)
 def draft_resource():
+    import traceback
     try:
-        for year in range(1960, 2026):
-            data = get_json(f"{BASE_URL}/draft/{year}")
+        for year in range(2026, 2027):
+            # BASE_URL already ends in "/", so no leading "/" here —
+            # otherwise this becomes ".../api/v1//draft/2026" (double
+            # slash), which is why this endpoint was returning nothing.
+            url = f"{BASE_URL}draft/{year}"
+            print(f"[draft] fetching {url}")
+            data = get_json(url)
             drafts = data.get("drafts")
             if not drafts:
+                print(f"[draft] no 'drafts' key in response for {year}: keys={list(data.keys())}")
                 continue
             rounds = drafts.get("rounds")
             if not isinstance(rounds, list):
+                print(f"[draft] 'rounds' missing or not a list for {year}: {type(rounds)}")
                 continue
+            pick_count = 0
             for round_obj in rounds:
                 picks = round_obj.get("picks", [])
                 for pick in picks:
+                    pick_count += 1
                     yield pick
-    except Exception as ex:
-        print('(draft_resource)Error {}'.format(ex.args))
+            print(f"[draft] yielded {pick_count} picks for {year}")
+    except Exception:
+        print("(draft_resource) Error:")
+        traceback.print_exc()
 
 
 # ----------------------------
@@ -802,8 +818,8 @@ def get_all_stats(year: int, group: str) -> list:
 
 @dlt.resource(
     name="player_stats",
-    write_disposition="append",
-    primary_key=["season", "player__id", "group", "position__code"]
+    write_disposition="merge",
+    primary_key=["season", "player__id", "group"]
 )
 def stats_resource(start_year: int = None, end_year: int = None):
     current_year = datetime.now().year
@@ -815,6 +831,17 @@ def stats_resource(start_year: int = None, end_year: int = None):
             for split in get_all_stats(year, group):
                 split["season"] = year
                 split["group"] = group
+                # Only "fielding" splits include a position sub-object in
+                # the MLB Stats API response -- hitting/pitching/running
+                # splits have no fielding position, so position__code
+                # (dlt's flattened name for position.code) would otherwise
+                # come through as NULL. That's semantically correct, but a
+                # NULL inside a merge primary_key is fragile (NULL doesn't
+                # reliably match NULL across merge/upsert implementations),
+                # so give those rows an explicit sentinel instead of
+                # leaving position missing.
+                if not split.get("position"):
+                    split["position"] = {"code": "ALL"}
                 yield split
 
 

@@ -1,3 +1,4 @@
+import argparse
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -21,6 +22,12 @@ DBT_PROJECT_DIR = r"C:\Users\Keith\baseball-sql\DBT_BASEBALL_SQLSERVER"
 DBT_PROFILES_DIR = r"C:\Users\Keith\.dbt"
 DBT_TARGET = "prod"
 DBT_THREADS = 1
+
+# Set at startup from the --full-refresh CLI flag (see __main__ below).
+# When True, every `dbt run` invocation gets --full-refresh appended, so
+# incremental models drop and rebuild from scratch instead of applying
+# their incremental logic.
+FULL_REFRESH = False
 
 MAX_RETRIES = 1
 RETRY_DELAY = 5  # seconds
@@ -396,8 +403,12 @@ def run_model(model: str, allow_fail: bool = False) -> Tuple[str, bool]:
     start_time = datetime.utcnow()
     start_count = get_record_count(model)
 
+    extra = f"--select {model} --threads {DBT_THREADS}"
+    if FULL_REFRESH:
+        extra += " --full-refresh"
+
     success, stderr = run_command(
-        dbt_cmd("run", f"--select {model} --threads {DBT_THREADS}"),
+        dbt_cmd("run", extra),
         f"run_{model}",
         allow_fail=allow_fail,
     )
@@ -566,6 +577,63 @@ def run_all_marts(all_completed: set):
         print(f" Mart skipped (unmet deps): {skipped}")
 
     return completed
+
+
+# ----------------------------------------------------------
+# DRAFT (yearly, conditional — runs after marts)
+# ----------------------------------------------------------
+def get_last_draft_year() -> Optional[int]:
+    """Return the most recent draft year currently loaded in dw.draft."""
+    query = "SELECT MAX(person__draft_year) FROM dw.draft"
+    try:
+        with _db_lock:
+            conn = _get_connection()
+            try:
+                cursor = conn.execute(query)
+                row = cursor.fetchone()
+                return int(row[0]) if row and row[0] is not None else None
+            finally:
+                conn.close()
+    except Exception as e:
+        print(f"  [get_last_draft_year] Could not get last draft year: {e}")
+        return None
+
+
+def run_draft_pipeline():
+    """Refresh the draft source/dimension/fact if the current year's draft
+    hasn't been loaded yet.
+
+    Compares MAX(person__draft_year) in dw.draft against the current
+    calendar year. If the current year's draft class is already present,
+    dim_draft/fact_draft are logged as SKIPPED and nothing runs. Otherwise
+    the draft source is re-ingested and dim_draft / fact_draft are rebuilt.
+
+    Runs after run_all_marts() rather than as part of the normal
+    dependency-ordered dimension/fact build, since this is a once-a-year
+    top-up rather than something that needs to run every pipeline execution.
+    """
+    print("\n================ DRAFT ================")
+
+    current_year = datetime.utcnow().year
+    last_draft_year = get_last_draft_year()
+
+    if last_draft_year is not None and last_draft_year >= current_year:
+        print(f" [draft] last_draft_year={last_draft_year} already covers {current_year} — skipping")
+        skip_model("dim_draft", f"last_draft_year {last_draft_year} >= {current_year}")
+        skip_model("fact_draft", f"last_draft_year {last_draft_year} >= {current_year}")
+        return
+
+    print(f" [draft] last_draft_year={last_draft_year}, current_year={current_year} — refreshing draft")
+
+    run_dlt("draft")
+
+    _, dim_success = run_model("dim_drafts", allow_fail=True)
+    if dim_success:
+        run_model("fact_draft", allow_fail=True)
+    else:
+        reason = "dim_draft failed"
+        print(f" [fact_draft] SKIPPED — {reason}")
+        skip_model("fact_draft", reason)
 
 
 # ----------------------------------------------------------
@@ -847,6 +915,8 @@ def run_lineage_builder():
 def run_pipeline():
     pipeline_start = datetime.utcnow()
     print(f"\n START PIPELINE  (run_id: {PIPELINE_RUN_ID})")
+    if FULL_REFRESH:
+        print(" >>> FULL REFRESH MODE: every dbt run will include --full-refresh <<<")
 
     # Create the pipeline table if it doesn't exist
     ensure_pipeline_table()
@@ -872,6 +942,8 @@ def run_pipeline():
 
     all_completed = dim_completed | fact_completed
     run_all_marts(all_completed)
+
+    run_draft_pipeline()
 
     run_all_tests()
     check_test_results()
@@ -904,4 +976,17 @@ def run_pipeline():
 # ENTRY
 # ==========================================================
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run the MLB dbt pipeline.")
+    parser.add_argument(
+        "--full-refresh",
+        action="store_true",
+        help=(
+            "Pass --full-refresh to every dbt run invocation, so "
+            "incremental models drop and rebuild from scratch instead of "
+            "applying their incremental logic."
+        ),
+    )
+    args = parser.parse_args()
+    FULL_REFRESH = args.full_refresh
+
     run_pipeline()

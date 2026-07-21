@@ -10,14 +10,20 @@
     Enriches each pitch with derived analytical flags used across marts.
     This is the analytical backbone — chase rate, whiff rate, zone rate,
     edge %, called-strike probability, etc. all start here.
+
+    FIX (edge case): every zone/chase/edge flag below is now guarded by
+    `has_location`. If plate_x, plate_z, sz_top, or sz_bot is NULL (the
+    tracking system missed the pitch), the flag returns NULL instead of a
+    hard 0. Previously a missing measurement was indistinguishable from a
+    real "not in zone" / "not a chase" observation, which quietly deflated
+    every zone%/chase% rate computed downstream.
 */
 
 with pitches as (
 
     select
-        -- identifiers
         event_id                                     as event_id,
-		load_id								 as load_id,
+        load_id                                       as load_id,
         game_pk,
         at_bat_index,
         play_id,
@@ -26,16 +32,13 @@ with pitches as (
         event_index                                   as event_index,
         season,
 
-        -- timestamps
         start_time,
         end_time,
 
-        -- event classification
         event_type                                     as event_type,
         is_pitch,
         is_in_play,
 
-        -- pitch result
         pitch_result_code                               as pitch_result_code,
         pitch_result_description                        as pitch_result_description,
         call_code                         as call_code,
@@ -46,56 +49,45 @@ with pitches as (
         is_ball                            as is_ball,
         is_out                             as is_out,
 
-        -- count state
         balls                                as balls,
         strikes                              as strikes,
         outs_when_up                                 as outs_when_up,
 
-        -- batter info
         batter_id,
         batter_name,
         batter_side,
 
-        -- pitcher info
         pitcher_id,
         pitcher_name,
         pitcher_hand,
 
-        -- pitch type
         pitch_type_code                         as pitch_type_code,
         pitch_type_description                  as pitch_type_description,
         pitch_trail_color                        as pitch_trail_color,
 
-        -- pitch velocity
         release_speed                     as release_speed,
         plate_speed                       as plate_speed,
         plate_time                      as plate_time,
         extension                       as extension,
 
-        -- pitch location (plate crossing)
         plate_x                as plate_x,
         plate_z                as plate_z,
 
-        -- pitch release point
         release_pos_x                 as release_pos_x,
         release_pos_y                 as release_pos_y,
         release_pos_z                 as release_pos_z,
 
-        -- pitch initial velocity components
         vx0               as vx0,
         vy0               as vy0,
         vz0               as vz0,
 
-        -- pitch acceleration components
         ax                as ax,
         ay                as ay,
         az                as az,
 
-        -- movement
         pfx_x              as pfx_x,
         pfx_z              as pfx_z,
 
-        -- breaks
         break_angle             as break_angle,
         break_length            as break_length,
         break_y                 as break_y,
@@ -105,7 +97,6 @@ with pitches as (
         spin_rate               as spin_rate,
         spin_direction          as spin_direction,
 
-        -- strike zone
         zone                            as zone,
         sz_top                 as sz_top,
         sz_bot              as sz_bot,
@@ -113,13 +104,21 @@ with pitches as (
         sz_depth               as sz_depth,
         pitch_type_confidence                 as pitch_type_confidence,
 
-        -- hit data
         exit_velocity                      as exit_velocity,
         launch_angle                      as launch_angle,
         hit_distance                    as hit_distance,
 
-        -- review
-        has_review                         as has_review
+        has_review                         as has_review,
+
+        -- FIX: single source of truth for "do we have enough location data
+        -- to classify this pitch relative to the zone at all?"
+        case
+            when plate_x is not null
+             and plate_z is not null
+             and sz_top  is not null
+             and sz_bot  is not null
+            then 1 else 0
+        end as has_location
 
     from {{ ref('stg_play_events') }}
 
@@ -153,6 +152,7 @@ enriched as (
         coalesce(z.is_in_zone, 0) as is_in_zone,
 
         case
+            when p.has_location = 0 then null
             when p.plate_x between -0.83 and 0.83
              and p.plate_z between p.sz_bot and p.sz_top
             then 1 else 0
@@ -179,6 +179,7 @@ enriched as (
         end as is_foul,
 
         case
+            when p.has_location = 0 then null
             when p.pitch_result_code in ('S','W','T','F','L','D','E','X')
              and (
                     p.plate_x < -0.83
@@ -188,47 +189,57 @@ enriched as (
              )
             then 1 else 0
         end as is_chase,
-		-- zone swing = swing at pitch inside the zone
+
+        -- zone swing = swing at pitch inside the zone
         case
+            when p.has_location = 0 then null
             when p.pitch_result_code in ('S', 'W', 'T', 'F', 'L', 'D', 'E', 'X')
              and p.plate_x between -0.83 and 0.83
              and p.plate_z between p.sz_bot and p.sz_top
             then 1
             else 0
         end as is_zone_swing,
-		 -- zone whiff = swing and miss at pitch inside the zone
+
+        -- zone whiff = swing and miss at pitch inside the zone
         case
+            when p.has_location = 0 then null
             when p.pitch_result_code in ('S', 'W', 'T')
              and p.plate_x between -0.83 and 0.83
              and p.plate_z between p.sz_bot and p.sz_top
             then 1
             else 0
         end as is_zone_whiff,
-		 -- edge pitch (within ~2 inches of zone boundary)
+
+        -- edge pitch (within ~2 inches of zone boundary)
         case
+            when p.has_location = 0 then null
             when abs(p.plate_x) between 0.65 and 1.0
               or abs(p.plate_z - p.sz_top) < 0.25
               or abs(p.plate_z - p.sz_bot) < 0.25
             then 1
             else 0
         end as is_edge_pitch,
-  -- called strike outside zone (umpire missed call favoring pitcher)
+
+        -- called strike outside zone (umpire missed call favoring pitcher)
         case
+            when p.has_location = 0 then null
             when p.pitch_result_code = 'C'
              and (p.plate_x < -0.83 or p.plate_x > 0.83
                   or p.plate_z < p.sz_bot or p.plate_z > p.sz_top)
             then 1
             else 0
         end as is_called_strike_outside_zone,
-		 -- ball inside zone (umpire missed call favoring batter)
+
+        -- ball inside zone (umpire missed call favoring batter)
         case
+            when p.has_location = 0 then null
             when p.pitch_result_code in ('B', '*B')
              and p.plate_x between -0.83 and 0.83
              and p.plate_z between p.sz_bot and p.sz_top
             then 1
             else 0
         end as is_ball_inside_zone,
-		
+
         case
             when p.strikes = 2 then 1 else 0
         end as is_two_strike,

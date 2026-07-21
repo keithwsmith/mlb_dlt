@@ -1,0 +1,462 @@
+version: 2
+
+# =============================================================================
+# UNIT TESTS — edge cases found in dimensions/facts/marts review
+#
+# Each test's `expect` block encodes the CORRECT/desired behavior, not what
+# the model currently produces. Run with:
+#     dbt test --select test_type:unit
+# Every test below is expected to FAIL until the corresponding model logic
+# is fixed — that's the point: they're regression specs for known bugs.
+#
+# Place this file anywhere under models/ (dbt discovers unit_tests in any
+# schema yml). Splitting per-model into the relevant schema.yml files is
+# also fine once you're happy with the fixtures.
+# =============================================================================
+
+unit_tests:
+
+  # ---------------------------------------------------------------------------
+  # 1. int_pitches_enriched
+  #    BUG: missing plate_x/plate_z/sz_top/sz_bot silently evaluate to 0
+  #    ("not in zone", "not chase", "not edge") instead of unknown/null.
+  # ---------------------------------------------------------------------------
+  - name: ut_int_pitches_enriched__missing_location_is_unknown_not_zero
+    model: int_pitches_enriched
+    description: >
+      A pitch with no Statcast location data (tracking gap) must not be
+      silently classified as "not in zone" / "not a chase" / "not an edge
+      pitch". Those flags should be NULL when the location inputs are NULL,
+      not 0, since 0 is indistinguishable from a real observation.
+    given:
+      - input: ref('stg_play_events')
+        rows:
+          # Row A: normal, fully-tracked pitch — swung on, outside the zone.
+          - event_id: "evt-1001"
+            load_id: "load-1"
+            game_pk: 700001
+            season: 2024
+            at_bat_index: 3
+            pitch_number: 1
+            pitch_result_code: "S"        # swinging strike
+            balls: 0
+            strikes: 0
+            outs_when_up: 0
+            plate_x: 1.20                 # outside +/-0.83 -> should be a chase
+            plate_z: 2.50
+            sz_top: 3.40
+            sz_bot: 1.60
+            zone: 12
+          # Row B: tracking gap — batter swung, but the camera/radar missed
+          # the pitch, so plate_x/plate_z/sz_top/sz_bot are all NULL.
+          - event_id: "evt-1002"
+            load_id: "load-1"
+            game_pk: 700001
+            season: 2024
+            at_bat_index: 4
+            pitch_number: 1
+            pitch_result_code: "S"        # swinging strike, but location unknown
+            balls: 0
+            strikes: 0
+            outs_when_up: 0
+            plate_x: null
+            plate_z: null
+            sz_top: null
+            sz_bot: null
+            zone: null
+      - input: ref('dim_zone')
+        rows:
+          - zone_id: 12
+            zone_description: "Above-Right"
+            zone_region: "Chase-Up"
+            is_in_zone: 0
+    overrides:
+      macros:
+        is_incremental: false
+    expect:
+      rows:
+        - event_id: "evt-1001"
+          is_in_strike_zone: 0
+          is_chase: 1
+          is_edge_pitch: 0
+        # Desired: unknown location -> unknown zone classification (NULL),
+        # not a hard 0. Current SQL returns 0/0/0 here because the BETWEEN
+        # comparisons on NULL evaluate to false rather than unknown-safe.
+        - event_id: "evt-1002"
+          is_in_strike_zone: null
+          is_chase: null
+          is_edge_pitch: null
+
+  # ---------------------------------------------------------------------------
+  # 2. fact_at_bats
+  #    BUG A: grouping by pitcher_id splits one real at-bat into two rows
+  #    when a reliever enters mid-at-bat.
+  #    BUG B: MAX(pitcher_name) is used as a "first non-null" substitute but
+  #    actually returns the alphabetically-greatest string.
+  # ---------------------------------------------------------------------------
+  - name: ut_fact_at_bats__mid_at_bat_pitching_change_stays_one_row
+    model: fact_at_bats
+    description: >
+      A pitching change mid-at-bat (e.g. starter leaves on a 1-1 count,
+      reliever finishes the at-bat) is still ONE at-bat and must produce
+      ONE row keyed by game_pk + at_bat_index + batter_id. The current
+      model groups by pitcher_id too, so it silently splits this into two
+      synthetic at-bats.
+    given:
+      - input: ref('stg_play_events')
+        rows:
+          - event_id: "evt-2001"
+            load_id: "load-1"
+            game_pk: 700002
+            season: 2024
+            at_bat_index: 7
+            pitch_number: 1
+            pitcher_id: 100
+            pitcher_name: "Adam Ace"
+            batter_id: 500
+            batter_name: "Sam Smith"
+            is_pitch: 1
+            is_strike: 1
+            is_ball: 0
+            pitch_result_code: "C"
+            balls: 0
+            strikes: 1
+            outs_when_up: 1
+          - event_id: "evt-2002"
+            load_id: "load-1"
+            game_pk: 700002
+            season: 2024
+            at_bat_index: 7
+            pitch_number: 2
+            pitcher_id: 200               # reliever swapped in mid at-bat
+            pitcher_name: "Zack Zorro"
+            batter_id: 500
+            batter_name: "Sam Smith"
+            is_pitch: 1
+            is_strike: 0
+            is_ball: 1
+            pitch_result_code: "B"
+            balls: 1
+            strikes: 1
+            outs_when_up: 1
+          - event_id: "evt-2003"
+            load_id: "load-1"
+            game_pk: 700002
+            season: 2024
+            at_bat_index: 7
+            pitch_number: 3
+            pitcher_id: 200
+            pitcher_name: "Zack Zorro"
+            batter_id: 500
+            batter_name: "Sam Smith"
+            is_pitch: 1
+            is_in_play: 1
+            is_out: 1
+            pitch_result_code: "X"
+            balls: 1
+            strikes: 1
+            outs_when_up: 1
+            exit_velocity: 101.3
+    overrides:
+      macros:
+        is_incremental: false
+    expect:
+      rows:
+        # Desired: single row for the at-bat, 3 total pitches.
+        - game_pk: 700002
+          at_bat_index: 7
+          batter_id: 500
+          total_pitches: 3
+      # Current SQL (group by ..., pitcher_id) instead produces TWO rows:
+      #   {pitcher_id: 100, total_pitches: 1}
+      #   {pitcher_id: 200, total_pitches: 2}
+
+  - name: ut_fact_at_bats__max_name_picks_wrong_value
+    model: fact_at_bats
+    description: >
+      max(pitcher_name) is used to collapse a name that should be constant
+      within an at-bat, but MAX on a string returns the alphabetically
+      greatest value, not the first/correct one. Here the same pitcher's
+      name is captured two different ways across pitches (nickname vs.
+      formal name recorded upstream) — MAX silently picks the wrong one.
+    given:
+      - input: ref('stg_play_events')
+        rows:
+          - event_id: "evt-3001"
+            load_id: "load-1"
+            game_pk: 700003
+            season: 2024
+            at_bat_index: 2
+            pitch_number: 1
+            pitcher_id: 100
+            pitcher_name: "A. Rodriguez"   # correct / first-seen form
+            batter_id: 500
+            is_pitch: 1
+            start_time: "2024-06-01T19:05:00"
+          - event_id: "evt-3002"
+            load_id: "load-1"
+            game_pk: 700003
+            season: 2024
+            at_bat_index: 2
+            pitch_number: 2
+            pitcher_id: 100
+            pitcher_name: "Z. Rodriguez"   # later, mis-keyed variant
+            batter_id: 500
+            is_pitch: 1
+            start_time: "2024-06-01T19:06:00"
+    overrides:
+      macros:
+        is_incremental: false
+    expect:
+      rows:
+        # Desired: the name captured on the first pitch of the at-bat.
+        - game_pk: 700003
+          at_bat_index: 2
+          pitcher_id: 100
+          pitcher_name: "A. Rodriguez"
+      # Current SQL returns "Z. Rodriguez" (alphabetically greatest via MAX).
+
+  # ---------------------------------------------------------------------------
+  # 3. fact_umpire_performance
+  #    BUG A: an umpire with zero missed calls produces NO row at all
+  #    (survivorship bias — only bad umpires appear in the fact table).
+  #    BUG B: duplicate dim_game_umpires rows (one per load) fan out the
+  #    pitch join and inflate called_strikes_outside_zone.
+  # ---------------------------------------------------------------------------
+  - name: ut_fact_umpire_performance__perfect_game_umpire_gets_a_row
+    model: fact_umpire_performance
+    description: >
+      An umpire who worked a game with zero missed calls should still show
+      up in the fact table with called_strikes_outside_zone = 0, so
+      aggregate accuracy metrics aren't biased toward only the umpires who
+      made mistakes.
+    given:
+      - input: ref('dim_challenges')
+        rows: []
+      - input: ref('int_pitches_enriched')
+        rows:
+          - game_pk: 700004
+            zone: 5
+            is_called_strike_outside_zone: 0
+      - input: ref('dim_game_umpires')
+        rows:
+          - game_pk: 700004
+            official_id: 900
+            official_type: "Home Plate"
+    overrides:
+      macros:
+        is_incremental: false
+    expect:
+      rows:
+        - game_pk: 700004
+          official_id: 900
+          called_strikes_outside_zone: 0
+          zones_with_bad_calls: 0
+          total_challenges: 0
+      # Current SQL produces ZERO rows for this game/umpire because
+      # bad_calls_summary (built only from rows where
+      # is_called_strike_outside_zone <> 0) drives the whole model.
+
+  - name: ut_fact_umpire_performance__no_fanout_from_duplicate_umpire_loads
+    model: fact_umpire_performance
+    description: >
+      dim_game_umpires is not deduplicated across incremental loads (its
+      surrogate key includes load_id), so the same umpire can appear twice
+      for one game. Joining pitches to umpires must not double-count a
+      single missed call just because the umpire dimension has two rows
+      for the same official_id/game_pk.
+    given:
+      - input: ref('dim_challenges')
+        rows: []
+      - input: ref('int_pitches_enriched')
+        rows:
+          - game_pk: 700005
+            zone: 3
+            is_called_strike_outside_zone: 1
+      - input: ref('dim_game_umpires')
+        rows:
+          # Same umpire, same game, two load "versions" — should collapse
+          # to one, not fan out the pitch join.
+          - game_pk: 700005
+            official_id: 901
+            official_type: "Home Plate"
+            load_id: "load-1"
+          - game_pk: 700005
+            official_id: 901
+            official_type: "Home Plate"
+            load_id: "load-2"
+    overrides:
+      macros:
+        is_incremental: false
+    expect:
+      rows:
+        - game_pk: 700005
+          official_id: 901
+          called_strikes_outside_zone: 1
+      # Current SQL returns called_strikes_outside_zone = 2 (the one bad
+      # pitch counted once per duplicate umpire row).
+
+  # ---------------------------------------------------------------------------
+  # 4. dim_player (SCD2)
+  #    BUG: team_move_dates takes MIN(effective_date) per (player, to_team),
+  #    so a player's SECOND stint with a team reuses the FIRST stint's date.
+  # ---------------------------------------------------------------------------
+  - name: ut_dim_player__repeat_trade_uses_correct_stint_date
+    model: dim_player
+    description: >
+      Player traded to Team A (2022), then Team B (2023), then back to
+      Team A (2024). The 2024 version's effective_date must be the 2024
+      trade date, not the original 2022 trade date to the same team.
+    given:
+      - input: ref('stg_rosters')
+        rows:
+          - player_id: 42
+            full_name: "Jamie Rivera"
+            team_id: "A"
+            jersey_number: 10
+            position__code: "8"
+            status__code: "A"
+            season: 2022
+            _dlt_load_id: "l1"
+          - player_id: 42
+            full_name: "Jamie Rivera"
+            team_id: "B"
+            jersey_number: 22
+            position__code: "8"
+            status__code: "A"
+            season: 2023
+            _dlt_load_id: "l2"
+          - player_id: 42
+            full_name: "Jamie Rivera"
+            team_id: "A"
+            jersey_number: 10
+            position__code: "8"
+            status__code: "A"
+            season: 2024
+            _dlt_load_id: "l3"
+      - input: ref('stg_player_transactions')
+        rows:
+          - player_id: 42
+            to_team_id: "A"
+            effective_date: "2022-03-01"
+          - player_id: 42
+            to_team_id: "B"
+            effective_date: "2023-07-15"
+          - player_id: 42
+            to_team_id: "A"
+            effective_date: "2024-08-01"
+    expect:
+      rows:
+        - player_id: 42
+          team_id: "A"
+          effective_season: 2024
+          effective_date: "2024-08-01"
+      # Current SQL groups team_move_dates by (player_id, to_team_id) only
+      # and takes MIN(effective_date), so this row gets effective_date =
+      # 2022-03-01 — predating the player's own 2022 version.
+
+  # ---------------------------------------------------------------------------
+  # 5. fact_games
+  #    BUG: is_no_hitter / is_shutout don't check is_final, so a
+  #    rained-out / suspended 0-0 or low-scoring game gets flagged.
+  # ---------------------------------------------------------------------------
+  - name: ut_fact_games__unfinished_game_is_not_a_no_hitter_or_shutout
+    model: fact_games
+    description: >
+      A game that was suspended/postponed before completion must not be
+      flagged is_no_hitter or is_shutout, even if the partial score happens
+      to satisfy the raw hits/score conditions.
+    given:
+      - input: ref('dim_games')
+        rows:
+          - game_pk: 700006
+            season: 2024
+            game_date: "2024-06-01"
+            official_date: "2024-06-01"
+            detailed_state: "Postponed"
+            is_final: 0
+            home_team_id: 1
+            away_team_id: 2
+            home_score: 0
+            away_score: 0
+            is_tie: 0
+            coded_game_state: "D"
+            game_type: "R"
+            load_id: "load-1"
+      - input: ref('dim_game_details')
+        rows:
+          - game_pk: 700006
+            home_hits: 0
+            away_hits: 3
+            home_walks: 0
+            away_walks: 1
+      - input: ref('dim_date')
+        rows:
+          - date_actual: "2024-06-01"
+            date_key: 20240601
+      - input: ref('dim_team')
+        rows:
+          - team_id: 1
+            season: 2024
+          - team_id: 2
+            season: 2024
+      - input: ref('dim_venue')
+        rows: []
+      - input: ref('dim_season')
+        rows:
+          - season: 2024
+      - input: ref('dim_game_type')
+        rows:
+          - game_type_code: "R"
+      - input: ref('dim_game_status')
+        rows:
+          - status__status_code: "D"
+    overrides:
+      macros:
+        is_incremental: false
+    expect:
+      rows:
+        - game_pk: 700006
+          is_no_hitter: 0
+          is_shutout: 0
+      # Current SQL flags is_no_hitter = 1 (home_hits = 0) and
+      # is_shutout = 1 (both scores = 0) even though the game never
+      # finished.
+
+  # ---------------------------------------------------------------------------
+  # 6. dim_position
+  #    BUG: MAX(position_name) across three unioned sources picks the
+  #    alphabetically-greatest label, not a canonical/authoritative one.
+  # ---------------------------------------------------------------------------
+  - name: ut_dim_position__canonical_name_not_alphabetical_max
+    model: dim_position
+    description: >
+      When three source tables disagree on the display name for the same
+      position code, the dimension should keep a consistent, authoritative
+      label (e.g. from mlbplayers) rather than whichever string happens to
+      sort highest.
+    given:
+      - input: source('dw', 'mlbplayers')
+        rows:
+          - primary_position__code: "9"
+            primary_position__name: "Outfielder"
+            primary_position__type: "Outfielder"
+            primary_position__abbreviation: "OF"
+      - input: source('dw', 'player_stats')
+        rows:
+          - position__code: "9"
+            position__name: "Right Field"
+            position__type: "Outfielder"
+            position__abbreviation: "RF"
+      - input: source('dw', 'rosters')
+        rows:
+          - position__code: "9"
+            position__name: "RF"
+            position__type: "Outfielder"
+            position__abbreviation: "RF"
+    expect:
+      rows:
+        - position_code: "9"
+          position_name: "Outfielder"
+      # Current SQL returns "Right Field" (MAX() picks it alphabetically
+      # over "Outfielder" and "RF").

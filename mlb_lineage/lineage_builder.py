@@ -37,7 +37,7 @@ except ImportError:
     DBT_PROJECT_DIR = r"C:\Users\Keith\baseball-sql\DBT_BASEBALL_SQLSERVER"
     DB_CONNECTION = {
         "driver":   "{ODBC Driver 17 for SQL Server}",
-        "server":   "10.0.0.54",
+        "server":   "KEITH-PERSONAL",
         "database": "dlt",
         "uid":      "sa",
         "pwd":      "pass0123",

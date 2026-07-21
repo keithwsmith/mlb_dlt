@@ -33,7 +33,7 @@ from datetime import datetime
 # ──────────────────────────────────────────────────────────
 # CONFIG — edit these or set matching environment variables
 # ──────────────────────────────────────────────────────────
-SERVER       = os.getenv("DB_SERVER",   "10.0.0.54")
+SERVER       = os.getenv("DB_SERVER",   "KEITH-PERSONAL")
 DATABASE     = os.getenv("DB_NAME",     "dlt")
 TEST_SCHEMA  = os.getenv("DB_SCHEMA",   "test_failures")
 TARGET_SCHEMA = os.getenv("DB_TARGET",  "silver")

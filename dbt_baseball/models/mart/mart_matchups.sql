@@ -46,6 +46,11 @@ matchup_pitches as (
         sum(cast(is_ball as int))                       as balls_total,
         -- zone
         sum(is_in_strike_zone)                          as in_zone,
+        -- FIX (edge case): is_in_strike_zone is NULL for untracked pitches,
+        -- so count out-of-zone pitches explicitly rather than deriving them
+        -- as total_pitches - in_zone, which would fold untracked pitches
+        -- into "out of zone" and inflate chase_pct's denominator.
+        sum(case when is_in_strike_zone = 0 then 1 else 0 end) as out_of_zone_pitches,
         -- avg location
         avg(plate_x)                                    as avg_plate_x,
         avg(plate_z)                                    as avg_plate_z
@@ -78,7 +83,7 @@ select
     coalesce(mb.barrels, 0)             as barrels,
     -- rates
     round(cast(mp.whiffs as float) / nullif(mp.swings, 0), 3)              as whiff_pct,
-    round(cast(mp.chases as float) / nullif(mp.total_pitches - mp.in_zone, 0), 3) as chase_pct,
+    round(cast(mp.chases as float) / nullif(mp.out_of_zone_pitches, 0), 3) as chase_pct,
     round(cast(mp.strikes as float) / nullif(mp.total_pitches, 0), 3)      as strike_pct,
     round(cast(mb.hard_hits as float) / nullif(mb.batted_ball_events, 0), 3) as hard_hit_pct,
     round(cast(mp.fastballs as float) / nullif(mp.total_pitches, 0), 3)    as fastball_pct,

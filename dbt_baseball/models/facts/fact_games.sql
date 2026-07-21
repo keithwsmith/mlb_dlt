@@ -98,17 +98,32 @@ SELECT
     gd.weather_wind,
 
     -- Flags
+    -- FIX (edge case): these previously had no guard on the game actually
+    -- being finished, so a rained-out/suspended game with a partial 0-hit
+    -- or 0-0 line was flagged the same as a real no-hitter/shutout.
     CASE
-        WHEN gd.home_hits = 0 OR gd.away_hits = 0
+        WHEN g.is_final = 1
+         AND (gd.home_hits = 0 OR gd.away_hits = 0)
         THEN 1 ELSE 0
     END                                         AS is_no_hitter,
+    -- NOTE: dw.game_details has no hit-by-pitch, error, or catcher's-
+    -- interference columns, so a batter who reached base by one of those
+    -- means with 0 hits/0 walks still can't be distinguished here. This
+    -- flag is "no hits and no walks in a completed game", which is a
+    -- necessary but not sufficient condition for an actual perfect game —
+    -- closing that gap requires adding those columns upstream, not just a
+    -- SQL change.
     CASE
-        WHEN (gd.home_hits = 0 AND gd.home_walks = 0)
-          OR (gd.away_hits = 0 AND gd.away_walks = 0)
+        WHEN g.is_final = 1
+         AND (
+                (gd.home_hits = 0 AND gd.home_walks = 0)
+             OR (gd.away_hits = 0 AND gd.away_walks = 0)
+             )
         THEN 1 ELSE 0
     END                                         AS is_perfect_game,
     CASE
-        WHEN g.home_score = 0 OR g.away_score = 0
+        WHEN g.is_final = 1
+         AND (g.home_score = 0 OR g.away_score = 0)
         THEN 1 ELSE 0
     END                                         AS is_shutout,
    

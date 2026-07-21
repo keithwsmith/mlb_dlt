@@ -38,6 +38,12 @@ pitcher_game as (
         sum(cast(is_swing as int)) - sum(cast(is_whiff as int)) as contact,
         -- zone / chase
         sum(cast(is_in_strike_zone as int))             as in_zone_pitches,
+        -- FIX (edge case): is_in_strike_zone is NULL for pitches with no
+        -- tracking data, so this explicitly counts only pitches we could
+        -- actually classify as outside the zone -- NOT total_pitches minus
+        -- in_zone_pitches, which would silently fold untracked pitches
+        -- into the "out of zone" bucket and inflate chase_pct's denominator.
+        sum(case when is_in_strike_zone = 0 then 1 else 0 end) as out_of_zone_pitches,
         sum(cast(is_chase as int))                      as chases,
         sum(cast(is_zone_swing as int))                 as zone_swings,
         sum(cast(is_zone_whiff as int))                 as zone_whiffs,
@@ -71,7 +77,7 @@ select
     round(cast(strikes as float) / nullif(total_pitches, 0), 3)         as strike_pct,
     round(cast(whiffs as float) / nullif(swings, 0), 3)                 as whiff_pct,
     round(cast(in_zone_pitches as float) / nullif(total_pitches, 0), 3) as zone_pct,
-    round(cast(chases as float) / nullif(total_pitches - in_zone_pitches, 0), 3) as chase_pct,
+    round(cast(chases as float) / nullif(out_of_zone_pitches, 0), 3) as chase_pct,
     round(cast(contact as float) / nullif(swings, 0), 3)               as contact_pct,
     round(cast(first_pitch_strikes as float) / nullif(first_pitches, 0), 3) as first_pitch_strike_pct,
     round(cast(swings as float) / nullif(total_pitches, 0), 3)         as swing_pct,

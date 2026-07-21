@@ -55,6 +55,11 @@ pitch_agg as (
 
         -- zone awareness
         sum(cast(is_in_strike_zone as int))             as pitches_in_zone,
+        -- FIX (edge case): is_in_strike_zone is NULL for untracked pitches,
+        -- so count out-of-zone pitches explicitly rather than deriving them
+        -- as pitches_seen - pitches_in_zone, which would fold untracked
+        -- pitches into "out of zone" and inflate chase_pct's denominator.
+        sum(case when is_in_strike_zone = 0 then 1 else 0 end) as out_of_zone_pitches,
         sum(case
             when is_in_strike_zone = 1 and is_swing = 0
             then 1 else 0
@@ -120,7 +125,7 @@ select
     -- rates
     round(cast(p.swings as float) / nullif(p.pitches_seen, 0), 3)           as swing_pct,
     round(cast(p.whiffs as float) / nullif(p.swings, 0), 3)                 as whiff_pct,
-    round(cast(p.chases as float) / nullif(p.pitches_seen - p.pitches_in_zone, 0), 3) as chase_pct,
+    round(cast(p.chases as float) / nullif(p.out_of_zone_pitches, 0), 3) as chase_pct,
     round(cast(p.zone_swings as float) / nullif(p.pitches_in_zone, 0), 3)   as zone_swing_pct,
     round(cast(b.hard_hits as float) / nullif(b.batted_ball_events, 0), 3)  as hard_hit_pct,
     round(cast(b.barrels as float) / nullif(b.batted_ball_events, 0), 3)    as barrel_pct,

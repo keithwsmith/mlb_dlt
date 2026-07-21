@@ -4,8 +4,72 @@
         unique_key=['game_pk', 'at_bat_index']
     )
 }}
+
+/*
+    FIX (edge case #1 — grain): the model used to GROUP BY pitcher_id in
+    addition to game_pk/at_bat_index, so a mid-at-bat pitching change
+    (reliever enters on a 1-1 count) silently produced TWO rows for what
+    was really one at-bat. The grain is now correctly game_pk +
+    at_bat_index only. `pitchers_in_ab` surfaces the substitution as data
+    instead of hiding it as a duplicate row.
+
+    FIX (edge case #2 — MAX() as "first non-null"): pitcher_name /
+    batter_name / pitcher_hand / batter_side / trajectory used
+    MAX(column), which for a string returns the alphabetically-greatest
+    value, not the first (or otherwise correct) one. These are now pulled
+    deterministically via FIRST_VALUE/LAST_VALUE windowed on pitch_number,
+    which is guaranteed constant within the group and therefore safe to
+    collapse with MAX() afterward.
+*/
+
 with pitches as (
-    select * from {{ ref('stg_play_events') }}
+    select
+        *,
+        first_value(pitcher_id)   over (
+            partition by game_pk, at_bat_index
+            order by pitch_number
+            rows between unbounded preceding and unbounded following
+        ) as ab_first_pitcher_id,
+        first_value(pitcher_name) over (
+            partition by game_pk, at_bat_index
+            order by pitch_number
+            rows between unbounded preceding and unbounded following
+        ) as ab_first_pitcher_name,
+        last_value(pitcher_id)    over (
+            partition by game_pk, at_bat_index
+            order by pitch_number
+            rows between unbounded preceding and unbounded following
+        ) as ab_final_pitcher_id,
+        last_value(pitcher_name)  over (
+            partition by game_pk, at_bat_index
+            order by pitch_number
+            rows between unbounded preceding and unbounded following
+        ) as ab_final_pitcher_name,
+        last_value(pitcher_hand)  over (
+            partition by game_pk, at_bat_index
+            order by pitch_number
+            rows between unbounded preceding and unbounded following
+        ) as ab_final_pitcher_hand,
+        first_value(batter_name)  over (
+            partition by game_pk, at_bat_index
+            order by pitch_number
+            rows between unbounded preceding and unbounded following
+        ) as ab_batter_name,
+        first_value(batter_side)  over (
+            partition by game_pk, at_bat_index
+            order by pitch_number
+            rows between unbounded preceding and unbounded following
+        ) as ab_batter_side,
+        last_value(trajectory)    over (
+            partition by game_pk, at_bat_index
+            order by pitch_number
+            rows between unbounded preceding and unbounded following
+        ) as ab_trajectory,
+        count(distinct pitcher_id) over (
+            partition by game_pk, at_bat_index
+        ) as pitchers_in_ab
+
+    from {{ ref('stg_play_events') }}
     where is_pitch = 1
     {% if is_incremental() %}
         and load_id > (select max(load_id) from {{ this }})
@@ -15,21 +79,23 @@ with pitches as (
 at_bat_agg as (
 
     select
-		max(load_id)  as load_id,
+        max(load_id)  as load_id,
         game_pk,
         season,
         at_bat_index,
-        pitcher_id,
         batter_id,
 
-        -- take first non-null (consistent within an AB)
-       
-		
-		cast(max(pitcher_name) as nvarchar(255)) as pitcher_name,
-		cast(max(batter_name) as nvarchar(255)) as batter_name,
-		cast(max(pitcher_hand) as nvarchar(10))  as pitcher_hand,
-		cast(max(batter_side) as nvarchar(10))   as batter_side,
+        -- credited pitcher = the one who threw the final (deciding) pitch
+        max(ab_final_pitcher_id)   as pitcher_id,
+        max(ab_final_pitcher_name) as pitcher_name,
+        max(ab_final_pitcher_hand) as pitcher_hand,
 
+        -- flags a substitution mid-at-bat instead of hiding it via a split row
+        max(ab_first_pitcher_id)   as first_pitcher_id,
+        max(pitchers_in_ab)        as pitchers_in_ab,
+
+        max(ab_batter_name)        as batter_name,
+        max(ab_batter_side)        as batter_side,
 
         -- pitch counts
         count(*)                                            as total_pitches,
@@ -56,14 +122,14 @@ at_bat_agg as (
         max(exit_velocity)                                  as exit_velocity,
         max(launch_angle)                                   as launch_angle,
         max(hit_distance)                                   as hit_distance,
-		cast(max(trajectory)  as nvarchar(50))   			as trajectory,
+        max(ab_trajectory)                                  as trajectory,
 
         -- timing
         min(start_time)                                     as ab_start_time,
         max(end_time)                                       as ab_end_time
 
     from pitches
-    group by game_pk, season, at_bat_index, pitcher_id, batter_id
+    group by game_pk, season, at_bat_index, batter_id
 
 )
 

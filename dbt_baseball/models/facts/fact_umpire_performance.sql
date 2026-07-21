@@ -10,27 +10,29 @@
   ─────────────────────────────────────────────────────────────────────────────
   Grain : one row per game × home-plate umpire.
 
-  Sources
-  ──────
-  dim_challenges        – manager challenge outcomes for the game
-  int_pitches_enriched  – pitch-level data with zone/strike flags (intermediate model)
-  dim_game_umpires      – maps umpire official_id → game_pk
+  FIX (edge case #1 — survivorship bias): the model used to be driven off
+  bad_calls_summary, which only exists for umpire/game pairs with at least
+  one is_called_strike_outside_zone = 1. An umpire who worked a perfectly
+  called game was invisible in this table, biasing any "average umpire
+  accuracy" rolled up from it. The model now drives from
+  home_plate_umpires (every umpire who worked a game), LEFT JOINing pitch
+  data in, so a clean game produces a row with called_strikes_outside_zone
+  = 0.
 
-  Metrics
-  ──────
-  Challenge metrics (rolled up from dim_challenges):
-    total_challenges          – total manager challenges in the game
-    overturned_challenges     – challenges where the call was reversed
-    upheld_challenges         – challenges where the original call stood
-    overturn_rate             – overturned / total (NULL when 0 challenges)
+  FIX (edge case #2 — join fan-out): dim_game_umpires' surrogate key
+  includes load_id, so the same umpire can appear more than once per game
+  across incremental loads without being deduplicated. Joining pitches to
+  that table directly could double (or triple) count a single missed call.
+  umpires_deduped below keeps only the latest load per game/umpire/type
+  before anything is joined to pitch data.
 
-  Called-strike accuracy metrics (from int_pitches_enriched):
-    called_strikes_outside_zone   – pitches called strikes that were outside
-                                    the zone (sum across all zones)
-    zones_with_bad_calls          – distinct pitch zones where at least one
-                                    bad call occurred
-    worst_zone                    – zone with the highest count of bad calls
-    worst_zone_count              – count of bad calls in that worst zone
+  FIX (edge case #3 — incremental never reprocesses a game): the old
+  `where game_pk not in (select game_pk from {{ this }})` filter meant a
+  late-arriving review reversal or corrected call for an already-loaded
+  game would never be picked up. The incremental filter is now based on
+  dim_game_umpires.load_id (added to the final select) like every other
+  incremental model in this project, so a game is reprocessed whenever new
+  umpire/pitch data lands for it.
 */
 
 -- ── 1. Challenge summary – one row per game ──────────────────────────────────
@@ -46,32 +48,66 @@ with challenge_summary as (
 
 ),
 
--- ── 2. Called-strike-outside-zone by game + umpire + zone ───────────────────
+-- ── 2. Dedup the umpire dimension before it drives anything ─────────────────
+umpires_deduped as (
+
+    select
+        game_pk,
+        official_id,
+        official_type,
+        load_id,
+        row_number() over (
+            partition by game_pk, official_id, official_type
+            order by load_id desc
+        ) as rn
+    from {{ ref('dim_game_umpires') }}
+    where official_type = 'Home Plate'
+
+),
+
+home_plate_umpires as (
+
+    select
+        game_pk,
+        official_id,
+        load_id
+    from umpires_deduped
+    where rn = 1
+    {% if is_incremental() %}
+        and load_id > (select coalesce(max(load_id), '0') from {{ this }})
+    {% endif %}
+
+),
+
+-- ── 3. Called-strike-outside-zone by game + umpire + zone ───────────────────
+--      LEFT JOIN so an umpire with zero missed calls still produces a row.
 bad_calls_by_zone as (
 
     select
-        pe.game_pk,
+        u.game_pk,
         u.official_id,
+        u.load_id,
         pe.zone,
-        sum(pe.is_called_strike_outside_zone)   as called_strikes_outside_zone
-    from {{ ref('int_pitches_enriched') }}               pe
-    join {{ ref('dim_game_umpires') }}                   u
-      on  u.game_pk       = pe.game_pk
-      and u.official_type = 'Home Plate'
-    where pe.is_called_strike_outside_zone <> 0
+        count(pe.event_id)   as called_strikes_outside_zone
+    from home_plate_umpires u
+    left join {{ ref('int_pitches_enriched') }} pe
+        on  pe.game_pk = u.game_pk
+        and pe.is_called_strike_outside_zone = 1
     group by
-        pe.game_pk,
+        u.game_pk,
         u.official_id,
+        u.load_id,
         pe.zone
 
 ),
 
--- ── 3. Roll zone detail up to game + umpire ──────────────────────────────────
+-- ── 4. Roll zone detail up to game + umpire ──────────────────────────────────
 bad_calls_summary as (
 
     select
         game_pk,
         official_id,
+        max(load_id)                                        as load_id,
         sum(called_strikes_outside_zone)                    as called_strikes_outside_zone,
         count(distinct zone)                                as zones_with_bad_calls
     from bad_calls_by_zone
@@ -81,7 +117,7 @@ bad_calls_summary as (
 
 ),
 
--- ── 4. Worst zone per game + umpire (zone with most bad calls) ───────────────
+-- ── 5. Worst zone per game + umpire (zone with most bad calls) ───────────────
 worst_zone as (
 
     select
@@ -94,10 +130,11 @@ worst_zone as (
             order by called_strikes_outside_zone desc
         )                               as rn
     from bad_calls_by_zone
+    where zone is not null
 
 ),
 
--- ── 5. Combine everything ────────────────────────────────────────────────────
+-- ── 6. Combine everything ────────────────────────────────────────────────────
 final as (
 
     select
@@ -107,6 +144,7 @@ final as (
         -- dimensions
         bcs.game_pk,
         bcs.official_id,
+        bcs.load_id,
 
         -- called-strike accuracy
         bcs.called_strikes_outside_zone,
@@ -135,10 +173,3 @@ final as (
 
 select *
 from final
-
-{% if is_incremental() %}
--- Only process games not yet in the fact table.
--- Because bad_calls_summary has no load_id we join back to the enriched
--- source to find the high-water mark.
-where game_pk not in (select game_pk from {{ this }})
-{% endif %}

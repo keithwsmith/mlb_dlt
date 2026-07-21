@@ -55,11 +55,16 @@ select
     sum(cast(p.is_strike as int))                               as strikes,
     -- zone
     sum(cast(p.is_in_strike_zone as int))                       as in_zone,
+    -- FIX (edge case): is_in_strike_zone is NULL for untracked pitches, so
+    -- count out-of-zone pitches explicitly rather than deriving them as
+    -- count(*) - in_zone, which would fold untracked pitches into "out of
+    -- zone" and inflate chase_pct's denominator.
+    sum(case when p.is_in_strike_zone = 0 then 1 else 0 end)   as out_of_zone_pitches,
     sum(cast(p.is_edge_pitch as int))                           as edge_pitches,
     -- rates
     round(cast(sum(p.is_whiff) as float) / nullif(sum(p.is_swing), 0), 3)   as whiff_pct,
     round(cast(sum(p.is_chase) as float)
-        / nullif(count(*) - sum(p.is_in_strike_zone), 0), 3)                as chase_pct,
+        / nullif(sum(case when p.is_in_strike_zone = 0 then 1 else 0 end), 0), 3) as chase_pct,
     round(cast(sum(p.is_in_strike_zone) as float) / nullif(count(*), 0), 3) as zone_pct,
     round(cast(sum(cast(p.is_strike as int)) as float) / nullif(count(*), 0), 3) as strike_pct,
     round(cast(count(*) as float)
