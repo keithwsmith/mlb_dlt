@@ -41,6 +41,27 @@
         | `sources.yml` | Source definitions and freshness checks for all raw `dw.*` tables |
         | `dimensions_schema.yml` | Column descriptions and data tests for all dimension models |
 
+        ### Web Application
+
+        | Folder | Description |
+        |--------|-------------|
+        | [`mlb_app`](mlb_app/) | FastAPI + React (in-browser Babel, no build step) web app for exploring the MLB data warehouse — browse games, players, teams, awards, draft picks, and umpires, backed by the `silver` star schema and `dw |
+
+        The `mlb_app` project contains:
+
+        | File | Purpose |
+        |------|---------|
+        | `main.py` | FastAPI app — route definitions, CORS, centralised error handling |
+        | `db.py` | pyodbc connection helper, incl. a `DATETIMEOFFSET` output converter |
+        | `queries.py` | All SQL for the app, kept in one place |
+        | `index.html` | SPA shell — loads React + Babel from a CDN, no build step |
+        | `app.js` | React app (JSX, transpiled in-browser) |
+        | `styles.css` | App styling |
+
+        Run the API with `uvicorn main:app --reload --port 8000`, then serve the
+        frontend folder (e.g. `python -m http.server 5500`) and open it in a browser.
+        See [`mlb_app/README.md`](mlb_app/README.md) for details.
+
         ## Architecture
 
         ```
@@ -69,6 +90,9 @@
         mlb_test_output.py               ← renders dbt test results into reports
         ETLMonitor.py                    ← pipeline health monitoring + row counts
         lineage_builder.py               ← exports dbt lineage metadata
+              │
+              ▼
+        mlb_app  (FastAPI + React)       ← browses the silver schema in a web UI
         ```
 
         ## Quick Start
@@ -102,6 +126,14 @@
         # ── 4. Review results ────────────────────────────────────────
         cd ../mlb_test_output
         python mlb_test_output.py      # render dbt test report
+
+        # ── 5. Browse the data (web app) ─────────────────────────────
+        cd ../mlb_app
+        pip install -r requirements.txt
+        uvicorn main:app --reload --port 8000
+        # in a second terminal, from the same folder:
+        python -m http.server 5500
+        # open http://localhost:5500
         ```
 
         ## Requirements
@@ -134,6 +166,7 @@
         ├── mlb_latestgame_agent/         # Latest game check + incremental trigger
         ├── mlb_test_output/              # dbt test result reporter
         ├── ETLMonitor/                   # ETL health monitor
+        ├── mlb_app/                      # FastAPI + React web app for browsing the warehouse
         ├── dbt_baseball/                 # dbt project
         │   ├── models/
         │   │   ├── staging/              # Staging models
@@ -155,4 +188,4 @@
         ```
 
         ---
-        *Generated 2026-07-21*
+        *Generated 2026-07-26*

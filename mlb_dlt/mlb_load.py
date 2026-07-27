@@ -223,12 +223,20 @@ def transactions_resource(start_year: int = None, end_year: int = None):
 # Seasons
 # ----------------------------
 @dlt.resource(name="seasons", write_disposition="replace")
-def seasons_resource():
-    for year in range(1990, 2026):
-        data = get_json(f"{BASE_URL}/seasons/{year}", {"sportId": 1})
+def seasons_resource(start_year: int = None, end_year: int = None):
+    start_year = start_year or 1960
+    end_year = end_year or 2026
+    for year in range(start_year, end_year + 1):
+        try:
+            data = get_json(f"{BASE_URL}/seasons/{year}", {"sportId": 1})
+        except Exception as e:
+            print(f"Season fetch failed for {year}: {e}")
+            continue
         seasons = data.get("seasons")
-        yield seasons
-
+        if seasons:
+            yield seasons
+        else:
+            print(f"No season data returned for {year}: {data}")
 
 # ----------------------------
 # Teams
@@ -781,6 +789,171 @@ def game_details_resource(start_year: int = None, end_year: int = None):
 
 
 # ----------------------------
+# Player game stats (per-player, per-game boxscore)
+# ----------------------------
+def get_game_pks_missing_player_stats(start_year: int = None, end_year: int = None) -> list:
+    """
+    Same incremental pattern as get_game_pks_from_dw() / get_games_missing_umpires():
+    scope to dw.games (Final, non-exhibition) within the year range, and skip any
+    game_pk that already has rows in dw.player_game_stats.
+    """
+    current_year = datetime.now().year
+    start_year = start_year or 1960
+    end_year = end_year or current_year
+
+    conn = pyodbc.connect(DW_CONNECTION_STRING, timeout=10)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT g.game_pk
+            FROM dw.games g
+            WHERE g.season BETWEEN ? AND ?
+              AND g.status__abstract_game_state = 'Final'
+              AND g.game_type NOT IN ('E', 'A')
+              AND NOT EXISTS (
+                  SELECT 1 FROM dw.player_game_stats pgs WHERE pgs.game_pk = g.game_pk
+              )
+        """, (start_year, end_year))
+        rows = cursor.fetchall()
+    except pyodbc.Error as e:
+        # First-ever run: dw.player_game_stats doesn't exist yet because dlt
+        # only creates a destination table once it has received data to write
+        # (it can't create the table ahead of the first load). Fall back to an
+        # unfiltered query for this range -- there's nothing to exclude yet
+        # anyway. Once this resource has run once, the table exists and the
+        # NOT EXISTS branch above takes over on every subsequent run.
+        print(f"[player_game_stats] dw.player_game_stats not found yet ({e}); "
+              f"treating this as a first-time full load for {start_year}–{end_year}.")
+        cursor.execute("""
+            SELECT g.game_pk
+            FROM dw.games g
+            WHERE g.season BETWEEN ? AND ?
+              AND g.status__abstract_game_state = 'Final'
+              AND g.game_type NOT IN ('E', 'A')
+        """, (start_year, end_year))
+        rows = cursor.fetchall()
+    conn.close()
+    print(f"[player_game_stats] {len(rows)} games in seasons {start_year}–{end_year} "
+          f"are missing from dw.player_game_stats and will be fetched.")
+    return [r[0] for r in rows]
+
+
+def fetch_boxscore_player_stats(game_pk: int) -> list:
+    """
+    One row per player per game, for both the away and home side, pulled from
+    the same /game/{pk}/boxscore endpoint umpires_resource already calls
+    (that resource only reads `officials` off this payload — everything
+    under teams.{home,away}.players is the per-player batting/pitching/
+    fielding line for this specific game).
+    """
+    try:
+        bs = get_json(f"{BASE_URL}/game/{game_pk}/boxscore")
+    except Exception as e:
+        print(f"Boxscore fetch failed for game {game_pk}: {e}")
+        return []
+
+    rows = []
+    teams = bs.get("teams", {})
+    for side in ("home", "away"):
+        side_data = teams.get(side, {})
+        team = side_data.get("team", {})
+        team_id = team.get("id")
+        team_name = team.get("name")
+
+        for player in side_data.get("players", {}).values():
+            person = player.get("person") or {}
+            position = player.get("position") or {}
+            stats = player.get("stats") or {}
+            batting = stats.get("batting") or {}
+            pitching = stats.get("pitching") or {}
+            fielding = stats.get("fielding") or {}
+
+            rows.append({
+                "game_pk": game_pk,
+                "player_id": person.get("id"),
+                "player_name": person.get("fullName"),
+                "team_id": team_id,
+                "team_name": team_name,
+                "is_home": side == "home",
+                "position_code": position.get("code"),
+                "position_name": position.get("name"),
+                "position_abbreviation": position.get("abbreviation"),
+                # Batting
+                "batting_at_bats": batting.get("atBats"),
+                "batting_runs": batting.get("runs"),
+                "batting_hits": batting.get("hits"),
+                "batting_doubles": batting.get("doubles"),
+                "batting_triples": batting.get("triples"),
+                "batting_home_runs": batting.get("homeRuns"),
+                "batting_rbi": batting.get("rbi"),
+                "batting_walks": batting.get("baseOnBalls"),
+                "batting_strikeouts": batting.get("strikeOuts"),
+                "batting_stolen_bases": batting.get("stolenBases"),
+                "batting_left_on_base": batting.get("leftOnBase"),
+                "batting_avg": batting.get("avg"),
+                # Pitching
+                "pitching_innings_pitched": pitching.get("inningsPitched"),
+                "pitching_hits_allowed": pitching.get("hits"),
+                "pitching_runs_allowed": pitching.get("runs"),
+                "pitching_earned_runs": pitching.get("earnedRuns"),
+                "pitching_walks": pitching.get("baseOnBalls"),
+                "pitching_strikeouts": pitching.get("strikeOuts"),
+                "pitching_home_runs_allowed": pitching.get("homeRuns"),
+                "pitching_era": pitching.get("era"),
+                # Fielding
+                "fielding_putouts": fielding.get("putOuts"),
+                "fielding_assists": fielding.get("assists"),
+                "fielding_errors": fielding.get("errors"),
+                "fielding_chances": fielding.get("chances"),
+            })
+
+    return rows
+
+
+@dlt.resource(
+    name="player_game_stats",
+    write_disposition="merge",
+    primary_key=("game_pk", "player_id"),
+)
+def player_game_stats_resource(start_year: int = None, end_year: int = None):
+    game_pks = get_game_pks_missing_player_stats(start_year, end_year)
+    print(f"Fetching player boxscore stats for {len(game_pks)} games...")
+
+    if not game_pks:
+        print("Nothing new to load.")
+        return
+
+    BATCH_SIZE = 200
+    with ThreadPoolExecutor(max_workers=50) as executor:
+        futures = {
+            executor.submit(fetch_boxscore_player_stats, game_pk): game_pk
+            for game_pk in game_pks
+        }
+        batch = []
+        done = 0
+        total = len(futures)
+
+        for future in as_completed(futures):
+            done += 1
+            try:
+                rows = future.result()
+                batch.extend(rows)
+            except Exception as e:
+                print(f"Player stats fetch failed for game {futures[future]}: {e}")
+                continue
+
+            if len(batch) >= BATCH_SIZE:
+                yield batch
+                batch = []
+
+            if done % 500 == 0:
+                print(f"Progress: {done}/{total} games processed")
+
+        if batch:
+            yield batch
+
+
+# ----------------------------
 # Stats helpers
 # ----------------------------
 def get_all_stats(year: int, group: str) -> list:
@@ -819,31 +992,49 @@ def get_all_stats(year: int, group: str) -> list:
 @dlt.resource(
     name="player_stats",
     write_disposition="merge",
-    primary_key=["season", "player__id", "group"]
+    primary_key=["season", "player__id"]
 )
 def stats_resource(start_year: int = None, end_year: int = None):
     current_year = datetime.now().year
     start_year = start_year or current_year
     end_year = end_year or current_year
 
-    for year in range(start_year, end_year + 1):
-        for group in ["hitting", "pitching", "fielding", "running"]:
-            for split in get_all_stats(year, group):
-                split["season"] = year
-                split["group"] = group
-                # Only "fielding" splits include a position sub-object in
-                # the MLB Stats API response -- hitting/pitching/running
-                # splits have no fielding position, so position__code
-                # (dlt's flattened name for position.code) would otherwise
-                # come through as NULL. That's semantically correct, but a
-                # NULL inside a merge primary_key is fragile (NULL doesn't
-                # reliably match NULL across merge/upsert implementations),
-                # so give those rows an explicit sentinel instead of
-                # leaving position missing.
-                if not split.get("position"):
-                    split["position"] = {"code": "ALL"}
-                yield split
+    # Prefix each group's stat fields so they don't collide when merged
+    # onto the same row (e.g. hitting has "avg", pitching doesn't, but
+    # both have "gamesPlayed" -- prefixing avoids one group silently
+    # clobbering another's value for a same-named field).
+    GROUP_PREFIX = {"hitting": "batting", "pitching": "pitching",
+                     "fielding": "fielding", "running": "running"}
 
+    for year in range(start_year, end_year + 1):
+        # player__id -> merged record for this season
+        players_this_year: dict[int, dict] = {}
+
+        for group in ["hitting", "pitching", "fielding", "running"]:
+            prefix = GROUP_PREFIX[group]
+            for split in get_all_stats(year, group):
+                player_id = split["player"]["id"]
+                record = players_this_year.setdefault(player_id, {
+                    "season": year,
+                    "player": split.get("player"),
+                    "team": split.get("team"),
+                })
+
+                # Fielding is the only group with a position sub-object.
+                # We no longer need the NULL-in-merge-key sentinel (group
+                # isn't part of the key anymore), but position is still
+                # worth keeping -- tag it so you know which group it came
+                # from, since a player can field under both "fielding"
+                # and incidentally have a pitching position too.
+                if split.get("position"):
+                    record[f"{prefix}_position"] = split["position"]
+
+                for key, value in split.items():
+                    if key in ("player", "team", "position"):
+                        continue
+                    record[f"{prefix}_{key}"] = value
+
+        yield from players_this_year.values()
 
 # ----------------------------
 # Play Events (incremental)
@@ -977,11 +1168,12 @@ if __name__ == "__main__":
     resources = {
         "play_events": lambda: play_events_resource(args.start_year, args.end_year),
         "games": lambda: games_resource(args.start_year, args.end_year),
-        "seasons": seasons_resource,
+        "seasons": lambda: seasons_resource(args.start_year, args.end_year),
         "teams": lambda: teams_resource(args.start_year, args.end_year),
         "draft": draft_resource,
         "players": players_resource,
         "player_stats": lambda: stats_resource(args.start_year, args.end_year),
+        "player_game_stats": lambda: player_game_stats_resource(args.start_year, args.end_year),
         "rosters": lambda: rosters_resource(args.start_year, args.end_year),
         "awards": award_recipients_resource,
         "player_transactions": lambda: transactions_resource(args.start_year, args.end_year),

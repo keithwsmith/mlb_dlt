@@ -355,6 +355,7 @@ SOURCE_TABLES = [
     "pitch_type",
     "Zones",
     "school_type_lookup",
+    "player_game_stats"
 ]
 
 
@@ -926,13 +927,15 @@ def run_pipeline():
     # ----------------------------
     print("\n================ DLT INGEST ================")
     run_dlt("games")
+    run_dlt("game_details")
+    run_dlt("player_stats")
+    run_dlt("player_game_stats")
     run_dlt("play_events")
     run_dlt("player_transactions")
     run_dlt("umpires")
     run_dlt("game_details")
     run_dlt("rosters")
-    run_dlt("player_stats")
-
+    
     run_dbt_deps()
     #run_source_freshness()
     run_source_tests()
