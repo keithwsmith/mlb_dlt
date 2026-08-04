@@ -1569,18 +1569,8 @@ models:
         tests:
           - not_null
 
-      - name: league_id
-        description: "League ID (AL/NL)."
-        tests:
-          - not_null
-
       - name: league_name
         description: "League name."
-        tests:
-          - not_null
-
-      - name: division_id
-        description: "Division ID."
         tests:
           - not_null
 

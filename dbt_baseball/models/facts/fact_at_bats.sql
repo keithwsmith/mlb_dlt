@@ -1,27 +1,3 @@
-{{
-    config(
-        materialized='incremental',
-        unique_key=['game_pk', 'at_bat_index']
-    )
-}}
-
-/*
-    FIX (edge case #1 — grain): the model used to GROUP BY pitcher_id in
-    addition to game_pk/at_bat_index, so a mid-at-bat pitching change
-    (reliever enters on a 1-1 count) silently produced TWO rows for what
-    was really one at-bat. The grain is now correctly game_pk +
-    at_bat_index only. `pitchers_in_ab` surfaces the substitution as data
-    instead of hiding it as a duplicate row.
-
-    FIX (edge case #2 — MAX() as "first non-null"): pitcher_name /
-    batter_name / pitcher_hand / batter_side / trajectory used
-    MAX(column), which for a string returns the alphabetically-greatest
-    value, not the first (or otherwise correct) one. These are now pulled
-    deterministically via FIRST_VALUE/LAST_VALUE windowed on pitch_number,
-    which is guaranteed constant within the group and therefore safe to
-    collapse with MAX() afterward.
-*/
-
 with pitches as (
     select
         *,
@@ -65,15 +41,31 @@ with pitches as (
             order by pitch_number
             rows between unbounded preceding and unbounded following
         ) as ab_trajectory,
-        count(distinct pitcher_id) over (
+
+        -- STEP 1: rank each distinct pitcher_id within the at-bat
+        dense_rank() over (
             partition by game_pk, at_bat_index
-        ) as pitchers_in_ab
+            order by pitcher_id
+        ) as pitcher_dense_rank
 
     from {{ ref('stg_play_events') }}
     where is_pitch = 1
     {% if is_incremental() %}
         and load_id > (select max(load_id) from {{ this }})
     {% endif %}
+),
+
+pitches_with_distinct_count as (
+
+    select
+        *,
+        -- STEP 2: max rank per at-bat = count of distinct pitcher_ids
+        max(pitcher_dense_rank) over (
+            partition by game_pk, at_bat_index
+        ) as pitchers_in_ab
+
+    from pitches
+
 ),
 
 at_bat_agg as (
@@ -128,7 +120,7 @@ at_bat_agg as (
         min(start_time)                                     as ab_start_time,
         max(end_time)                                       as ab_end_time
 
-    from pitches
+    from pitches_with_distinct_count
     group by game_pk, season, at_bat_index, batter_id
 
 )

@@ -18,5 +18,6 @@ select zone_id, zone_description, is_in_zone, zone_region from (
         (11, 'Above-Left',      0, 'Chase-Up'),
         (12, 'Above-Right',     0, 'Chase-Up'),
         (13, 'Below-Left',      0, 'Chase-Down'),
-        (14, 'Below-Right',     0, 'Chase-Down')
+        (14, 'Below-Right',     0, 'Chase-Down'),
+		(99, 'Unknown Zone',    0,'Unknown')
 ) as z(zone_id, zone_description, is_in_zone, zone_region)

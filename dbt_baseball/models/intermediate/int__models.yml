@@ -1,0 +1,833 @@
+version: 2
+
+# NOTE ON TEST DEPENDENCIES: several tests below (accepted_range,
+# unique_combination_of_columns) come from the dbt_utils package
+# (dbt-labs/dbt_utils), not dbt-core. If it's not already in your
+# packages.yml, either `dbt deps` after adding it, or delete those
+# specific tests -- dbt-core alone only ships unique, not_null,
+# accepted_values, and relationships.
+#
+# NOTE ON SPECULATIVE TESTS: a few tests below assert a domain that's
+# inferred rather than confirmed against your actual data (flagged inline
+# with "verify"). If a test fails on a real run, that's a signal to either
+# fix the underlying data/logic or loosen the assertion -- not to
+# automatically delete the test.
+
+models:
+
+  # ────────────────────────────────────────────────────────────────────
+  - name: int_team_game_results
+    description: >
+      Intermediate model. One row per team per completed game (games
+      unpivoted into home + away perspective), with result, venue,
+      double-header/day-night flags, start hour, interleague flag, and a
+      derived series_id already computed. Materialized incremental (merge
+      on game_pk, team_id) with a 14-day date lookback -- see model header
+      for why series_id needs that lookback.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [game_pk, team_id]
+    columns:
+      - name: game_pk
+        description: MLB game identifier. Combined with team_id, forms this model's grain.
+        tests: [not_null]
+
+      - name: season
+        description: Season year the game was played in.
+        tests: [not_null]
+
+      - name: game_type_desc
+        description: >
+          Raw single-letter game_type code from dw.games. Confirmed values in
+          this data: D/F/L/W (postseason rounds), S (spring training), R
+          (regular season). This model filters to 'R' only -- postseason/
+          spring training games are excluded before this column is even
+          selected.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['R']
+
+      - name: game_date
+        description: Official date of the game (used for chronological ordering throughout this model).
+        tests: [not_null]
+
+      - name: game_datetime
+        description: Full game timestamp, used as the tiebreaker sort key alongside game_date for window functions (e.g. doubleheaders share a game_date).
+        tests: [not_null]
+
+      - name: team_id
+        description: The team this row represents (this model's "perspective" team). Combined with game_pk, forms this model's grain.
+        tests: [not_null]
+
+      - name: team_name
+        description: Display name of team_id.
+        tests: [not_null]
+
+      - name: opponent_team_id
+        description: The team on the other side of this game.
+        tests: [not_null]
+
+      - name: opponent_team_name
+        description: Display name of opponent_team_id.
+        tests: [not_null]
+
+      - name: is_home
+        description: 1 if team_id was the home team for this game, 0 if away.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+      - name: venue_id
+        description: Ballpark the game was played at.
+        tests: [not_null]
+
+      - name: team_score
+        description: >
+          Runs scored by team_id. 35 games from the 2000 season with no
+          recorded score anywhere in the warehouse are excluded from this
+          model entirely (see CONFIRMED DATA GAP note in model header) --
+          not_null holds because those rows never make it in, not because
+          they were backfilled.
+        tests: [not_null]
+
+      - name: opponent_score
+        description: >
+          Runs scored by opponent_team_id. Same 35-game 2000-season
+          exclusion as team_score -- see CONFIRMED DATA GAP note in model
+          header.
+        tests: [not_null]
+
+      - name: result
+        description: Result from team_id's own point of view -- 'W' win, 'L' loss, 'T' tie.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['W', 'L', 'T']
+
+      - name: double_header
+        description: >
+          Raw double-header indicator, passed through as-is from the
+          source. Domain not confirmed (original source note guessed
+          'Y'/'N'/'S' for split doubleheader/single game) -- verify against
+          your actual dim_games values before adding an accepted_values
+          test here.
+
+      - name: day_night
+        description: Whether the game was a day or night game.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['D', 'N']
+
+      - name: start_hour
+        description: >
+          Hour-of-day (24-hour, 0-23) of first pitch, parsed from the
+          "HH:MM" local wall-clock string loaded in game_details (see
+          mlb_load.py). NULL when first_pitch couldn't be parsed or was
+          never captured for the game.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 23
+
+      - name: is_interleague
+        description: 1 if the home and away teams belonged to different leagues that season, 0 otherwise (also 0 -- not unknown -- when either team's league_id couldn't be resolved; see model header).
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+      - name: series_id
+        description: >
+          Derived running counter identifying which series this game
+          belongs to, scoped to a specific (home_team_id, away_team_id)
+          pairing. NOTE: the same series_id number can recur across
+          different opponent pairings -- always scope by opponent/is_home
+          alongside series_id when grouping (see int_team_game_results_to_date
+          for the pattern).
+        tests: [not_null]
+
+      - name: games_in_series
+        description: Total number of games scheduled in this series, passed through from the source.
+        tests: [not_null]
+
+      - name: series_game_number
+        description: This game's position within its series (1 = series opener).
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+
+  # ────────────────────────────────────────────────────────────────────
+  - name: int_team_game_results_to_date
+    description: >
+      Same grain as int_team_game_results (one row per team per completed
+      game) plus running "as of this game" win/loss totals split by venue,
+      opponent (further split by home/away), double_header, day_night,
+      start_hour, interleague, this specific series, games_in_series, and
+      series_game_number. Every split EXCEPT the series one resets each
+      season (season is part of the partition/grouping) -- e.g.
+      wins_to_date_venue is wins at that venue THIS season, not a career
+      total. The series split doesn't need season since series_id never
+      repeats across seasons on its own. Materialized incremental (merge
+      on game_pk, team_id): new rows use a prior-totals + batch-delta
+      pattern rather than a date lookback, since most of these splits lack
+      the short-term recurrence that makes a lookback window safe (see
+      model header for details). Run --full-refresh after any out-of-order
+      historical backfill.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [game_pk, team_id]
+    columns:
+      # Base columns are carried through unchanged from int_team_game_results;
+      # see that model for full descriptions. Same tests re-applied here
+      # since this is a separately materialized table.
+      - name: game_pk
+        description: See int_team_game_results.game_pk.
+        tests: [not_null]
+      - name: season
+        description: See int_team_game_results.season.
+        tests: [not_null]
+      - name: game_type_desc
+        description: See int_team_game_results.game_type_desc.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['R']
+      - name: game_date
+        description: See int_team_game_results.game_date.
+        tests: [not_null]
+      - name: game_datetime
+        description: See int_team_game_results.game_datetime.
+        tests: [not_null]
+      - name: team_id
+        description: See int_team_game_results.team_id.
+        tests: [not_null]
+      - name: team_name
+        description: See int_team_game_results.team_name.
+        tests: [not_null]
+      - name: opponent_team_id
+        description: See int_team_game_results.opponent_team_id.
+        tests: [not_null]
+      - name: opponent_team_name
+        description: See int_team_game_results.opponent_team_name.
+        tests: [not_null]
+      - name: is_home
+        description: See int_team_game_results.is_home.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: venue_id
+        description: See int_team_game_results.venue_id.
+        tests: [not_null]
+      - name: team_score
+        description: See int_team_game_results.team_score.
+        tests: [not_null]
+      - name: opponent_score
+        description: See int_team_game_results.opponent_score.
+        tests: [not_null]
+      - name: result
+        description: See int_team_game_results.result.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['W', 'L', 'T']
+      - name: double_header
+        description: See int_team_game_results.double_header.
+      - name: day_night
+        description: See int_team_game_results.day_night.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['D', 'N']
+      - name: start_hour
+        description: See int_team_game_results.start_hour.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 23
+      - name: is_interleague
+        description: See int_team_game_results.is_interleague.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: series_id
+        description: See int_team_game_results.series_id.
+        tests: [not_null]
+      - name: games_in_series
+        description: See int_team_game_results.games_in_series.
+        tests: [not_null]
+      - name: series_game_number
+        description: See int_team_game_results.series_game_number.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+
+      # Running "as of this game" totals -- each pair is inclusive of the
+      # current game and monotonically non-decreasing within its group.
+      - name: wins_to_date_venue
+        description: team_id's cumulative wins at venue_id, through and including this game.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: losses_to_date_venue
+        description: team_id's cumulative losses at venue_id, through and including this game.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: wins_to_date_opponent
+        description: team_id's cumulative wins vs opponent_team_id while in this specific is_home state, through and including this game.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: losses_to_date_opponent
+        description: team_id's cumulative losses vs opponent_team_id while in this specific is_home state, through and including this game.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: wins_to_date_doubleheader
+        description: team_id's cumulative wins for this double_header value, through and including this game.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: losses_to_date_doubleheader
+        description: team_id's cumulative losses for this double_header value, through and including this game.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: wins_to_date_day_night
+        description: team_id's cumulative wins for this day_night value, through and including this game.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: losses_to_date_day_night
+        description: team_id's cumulative losses for this day_night value, through and including this game.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: wins_to_date_start_hour
+        description: team_id's cumulative wins for this start_hour, through and including this game.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: losses_to_date_start_hour
+        description: team_id's cumulative losses for this start_hour, through and including this game.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: wins_to_date_interleague
+        description: team_id's cumulative wins for this is_interleague flag, through and including this game.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: losses_to_date_interleague
+        description: team_id's cumulative losses for this is_interleague flag, through and including this game.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: wins_to_date_series
+        description: team_id's cumulative wins within this specific series (opponent_team_id + is_home + series_id), through and including this game.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: losses_to_date_series
+        description: team_id's cumulative losses within this specific series (opponent_team_id + is_home + series_id), through and including this game.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: wins_to_date_games_in_series
+        description: team_id's cumulative wins in series of this length (games_in_series), through and including this game.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: losses_to_date_games_in_series
+        description: team_id's cumulative losses in series of this length (games_in_series), through and including this game.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: wins_to_date_series_game_number
+        description: team_id's cumulative wins specifically as "game N of a series" (series_game_number), through and including this game.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: losses_to_date_series_game_number
+        description: team_id's cumulative losses specifically as "game N of a series" (series_game_number), through and including this game.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+  # ────────────────────────────────────────────────────────────────────
+  - name: int_pitches_enriched
+    description: >
+      One row per pitch/pitch-event. Enriches raw pitch-tracking data with
+      derived analytical flags (zone, swing, whiff, chase, edge, called-
+      strike/ball-inside-zone umpire misses, count leverage, etc) used
+      across marts. Materialized incremental (merge on event_id), filtered
+      by load_id > max(load_id) already loaded.
+    columns:
+      # ── identifiers / keys ──────────────────────────────────────────
+      - name: event_id
+        description: Unique identifier for one pitch event. This model's grain.
+        tests: [not_null, unique]
+
+      - name: load_id
+        description: Identifier of the ETL/load batch that ingested this row. Used as the incremental cursor (rows with load_id greater than what's already loaded are picked up on incremental runs).
+        tests: [not_null]
+
+      - name: game_pk
+        description: MLB game identifier the pitch belongs to.
+        tests: [not_null]
+
+      - name: at_bat_index
+        description: Index of the plate appearance within the game that this pitch belongs to.
+        tests: [not_null]
+
+      - name: play_id
+        description: Identifier for the play (event) within the at-bat, distinct from pitch_number.
+
+      - name: pfx_id
+        description: Identifier tying this pitch to its pitch-tracking (PITCHf/x-style) metadata source.
+
+      - name: pitch_number
+        description: Sequence number of this pitch within its at-bat (1 = first pitch of the at-bat).
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+
+      - name: event_index
+        description: Ordering index of this event within the game's full event sequence.
+
+      - name: season
+        description: Season year the game was played in.
+        tests: [not_null]
+
+      # ── timing ───────────────────────────────────────────────────────
+      - name: start_time
+        description: Timestamp the pitch/tracking began.
+
+      - name: end_time
+        description: Timestamp the pitch event concluded.
+
+      # ── event / result (raw, from source) ──────────────────────────
+      - name: event_type
+        description: High-level type of the game event this pitch belongs to (e.g. pitch vs. pickoff attempt). Exact domain not confirmed -- verify against stg_play_events.
+
+      - name: is_pitch
+        description: Flag indicating this event is an actual pitch (as opposed to e.g. a pickoff attempt). Domain/type not confirmed -- verify against stg_play_events before adding an accepted_values test.
+
+      - name: is_in_play
+        description: Flag indicating the pitch was put in play by the batter. Domain/type not confirmed -- verify against stg_play_events.
+
+      - name: pitch_result_code
+        description: >
+          Coded result of the pitch (e.g. S/W/T/F/L/D/E/X/C/B). Drives
+          most of the derived swing/whiff/chase/foul flags below.
+
+      - name: pitch_result_description
+        description: Human-readable description of pitch_result_code.
+
+      - name: call_code
+        description: Umpire/system call code for the pitch.
+
+      - name: call_description
+        description: Human-readable description of call_code.
+
+      - name: ball_color
+        description: Display/visualization color code for the pitch. Presentation metadata, not used analytically.
+
+      - name: is_in_play_detail
+        description: Additional detail/sub-classification for balls put in play.
+
+      - name: is_strike
+        description: Flag indicating the pitch was ruled a strike. Domain/type not confirmed -- verify against stg_play_events.
+
+      - name: is_ball
+        description: Flag indicating the pitch was ruled a ball. Domain/type not confirmed -- verify against stg_play_events.
+
+      - name: is_out
+        description: Flag indicating the pitch/play resulted in an out. Domain/type not confirmed -- verify against stg_play_events.
+
+      # ── count context ────────────────────────────────────────────────
+      - name: balls
+        description: Ball count before this pitch.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 3
+
+      - name: strikes
+        description: Strike count before this pitch.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 2
+
+      - name: outs_when_up
+        description: Number of outs in the inning when this batter came to the plate.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 2
+
+      # ── batter / pitcher ────────────────────────────────────────────
+      - name: batter_id
+        description: MLB player id of the batter.
+        tests: [not_null]
+
+      - name: batter_name
+        description: Batter's display name.
+
+      - name: batter_side
+        description: Batter's handedness (e.g. L/R).
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['L', 'R']
+
+      - name: pitcher_id
+        description: MLB player id of the pitcher.
+        tests: [not_null]
+
+      - name: pitcher_name
+        description: Pitcher's display name.
+
+      - name: pitcher_hand
+        description: Pitcher's throwing hand (e.g. L/R).
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['L', 'R']
+
+      # ── pitch type ───────────────────────────────────────────────────
+      - name: pitch_type_code
+        description: Coded pitch type (e.g. FF, SL, CH).
+
+      - name: pitch_type_description
+        description: Human-readable pitch type description.
+
+      - name: pitch_trail_color
+        description: Display/visualization color code for the pitch trail. Presentation metadata, not used analytically.
+
+      - name: pitch_type_confidence
+        description: Classifier confidence score for pitch_type_code. Scale (e.g. 0-1 vs 0-100) not confirmed -- verify against source before adding a range test.
+
+      # ── physics / tracking (raw pitch-tracking measurements) ───────
+      - name: release_speed
+        description: Pitch velocity at release. Unit (mph) assumed -- verify against source.
+
+      - name: plate_speed
+        description: Pitch velocity as it crosses the plate.
+
+      - name: plate_time
+        description: Time from release to plate.
+
+      - name: extension
+        description: Pitcher's extension toward the plate at release.
+
+      - name: plate_x
+        description: Horizontal pitch location at the plate (feet from center, batter's-eye view). Used to derive has_location and every zone/chase/edge flag below.
+
+      - name: plate_z
+        description: Vertical pitch location at the plate (feet above ground). Used to derive has_location and every zone/chase/edge flag below.
+
+      - name: release_pos_x
+        description: Horizontal release point coordinate.
+
+      - name: release_pos_y
+        description: Release point distance from home plate.
+
+      - name: release_pos_z
+        description: Vertical release point coordinate.
+
+      - name: vx0
+        description: Initial velocity, x component.
+
+      - name: vy0
+        description: Initial velocity, y component.
+
+      - name: vz0
+        description: Initial velocity, z component.
+
+      - name: ax
+        description: Acceleration, x component.
+
+      - name: ay
+        description: Acceleration, y component.
+
+      - name: az
+        description: Acceleration, z component.
+
+      - name: pfx_x
+        description: Horizontal pitch movement (induced break) relative to a spin-free trajectory.
+
+      - name: pfx_z
+        description: Vertical pitch movement (induced break) relative to a spin-free trajectory.
+
+      - name: break_angle
+        description: Pitch break angle.
+
+      - name: break_length
+        description: Pitch break length (greatest distance between the actual trajectory and the straight line from release to plate).
+
+      - name: break_y
+        description: Distance from home plate at which the pitch achieves its greatest deviation from a straight line.
+
+      - name: break_vertical
+        description: Vertical break measurement.
+
+      - name: break_vertical_induced
+        description: Vertical break induced by spin (gravity-independent).
+
+      - name: break_horizontal
+        description: Horizontal break measurement.
+
+      - name: spin_rate
+        description: Pitch spin rate (rpm, verify unit against source).
+
+      - name: spin_direction
+        description: Pitch spin axis/direction.
+
+      # ── strike zone ──────────────────────────────────────────────────
+      - name: zone
+        description: >
+          Statcast-style zone code the pitch crossed the plate in.
+          Defaulted to 99 via COALESCE when the source zone is NULL
+          (unknown/unclassified). The accepted_values test below assumes
+          the standard 1-9 (in-zone) / 11-14 (chase quadrants) / 99
+          (unknown) convention -- verify this matches your source's actual
+          codes and adjust/remove if not.
+        tests:
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 99]
+
+      - name: sz_top
+        description: Top of this batter's strike zone (feet).
+
+      - name: sz_bot
+        description: Bottom of this batter's strike zone (feet).
+
+      - name: sz_width
+        description: Width of the strike zone used for zone classification.
+
+      - name: sz_depth
+        description: Depth of the strike zone used for zone classification.
+
+      # ── hit outcome (populated only when the pitch was put in play) ─
+      - name: exit_velocity
+        description: Batted ball exit velocity (mph). NULL for pitches not put in play.
+
+      - name: launch_angle
+        description: Batted ball launch angle (degrees). NULL for pitches not put in play.
+
+      - name: hit_distance
+        description: Batted ball projected/measured distance (feet). NULL for pitches not put in play.
+
+      # ── review ───────────────────────────────────────────────────────
+      - name: has_review
+        description: Flag indicating the play was subject to replay review.
+
+      # ── derived in this model ───────────────────────────────────────
+      - name: has_location
+        description: >
+          1 if plate_x, plate_z, sz_top, and sz_bot are all present for
+          this pitch, else 0. Single source of truth gating every
+          zone/chase/edge flag below -- prevents a missing tracking
+          measurement from being silently counted as "not in zone."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+      - name: zone_description
+        description: Description of `zone`, joined from dim_zone.
+
+      - name: zone_region
+        description: Region grouping of `zone` (e.g. heart/shadow/chase/waste -- verify against dim_zone), joined from dim_zone.
+
+      - name: is_in_zone
+        description: 1 if dim_zone flags this pitch's zone as inside the strike zone, defaulted to 0 when there's no matching dim_zone row.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+      - name: is_in_strike_zone
+        description: >
+          1 if plate_x/plate_z fall within the batter's actual zone
+          bounds (sz_top/sz_bot and the standard 17-inch plate width) --
+          independent of the `zone` code/dim_zone join. NULL when
+          has_location = 0.
+        tests:
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+      - name: is_swing
+        description: 1 if pitch_result_code indicates the batter swung (S/W/T/F/L/D/E/X).
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+      - name: is_whiff
+        description: 1 if pitch_result_code indicates a swing and miss (S/W/T).
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+      - name: is_called_strike
+        description: 1 if pitch_result_code = 'C' (umpire called strike, no swing).
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+      - name: is_foul
+        description: 1 if pitch_result_code indicates a foul ball (F/L).
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+      - name: is_chase
+        description: 1 if the batter swung at a pitch outside the strike zone. NULL when has_location = 0.
+        tests:
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+      - name: is_zone_swing
+        description: 1 if the batter swung at a pitch inside the strike zone. NULL when has_location = 0.
+        tests:
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+      - name: is_zone_whiff
+        description: 1 if the batter swung and missed at a pitch inside the strike zone. NULL when has_location = 0.
+        tests:
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+      - name: is_edge_pitch
+        description: 1 if the pitch landed near the strike zone boundary (within roughly 2 inches). NULL when has_location = 0.
+        tests:
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+      - name: is_called_strike_outside_zone
+        description: 1 if a called strike was outside the strike zone -- an umpire miss favoring the pitcher. NULL when has_location = 0.
+        tests:
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+      - name: is_ball_inside_zone
+        description: 1 if a called ball was inside the strike zone -- an umpire miss favoring the batter. NULL when has_location = 0.
+        tests:
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+      - name: is_two_strike
+        description: 1 if the count was 2 strikes before this pitch.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+      - name: is_first_pitch
+        description: 1 if this was the first pitch of the at-bat (pitch_number = 1).
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+      - name: count_leverage
+        description: "Pitcher's count leverage before this pitch: 'Ahead' (more strikes than balls), 'Behind' (more balls than strikes), or 'Even'."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Ahead', 'Behind', 'Even']

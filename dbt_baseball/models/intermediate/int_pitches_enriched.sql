@@ -96,12 +96,11 @@ with pitches as (
         break_horizontal        as break_horizontal,
         spin_rate               as spin_rate,
         spin_direction          as spin_direction,
-
-        zone                            as zone,
-        sz_top                 as sz_top,
-        sz_bot              as sz_bot,
-        sz_width               as sz_width,
-        sz_depth               as sz_depth,
+		COALESCE(zone, 99) 		AS zone,
+        sz_top                  as sz_top,
+        sz_bot                  as sz_bot,
+        sz_width                as sz_width,
+        sz_depth                as sz_depth,
         pitch_type_confidence                 as pitch_type_confidence,
 
         exit_velocity                      as exit_velocity,

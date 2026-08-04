@@ -381,7 +381,7 @@ def insert_result(cursor, table_name, model_name, test_name, test_type,
         INSERT INTO [{OUTPUT_SCHEMA}].[{OUTPUT_TABLE}]
             (table_name, model_name, test_name, test_type,
              failure_count, sql_statement, sql_result, delete_sql)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, CAST(? AS NVARCHAR(MAX)), CAST(? AS NVARCHAR(MAX)), CAST(? AS NVARCHAR(MAX)))
     """, table_name, model_name, test_name, test_type,
          failure_count, sql_statement, sql_result, delete_sql)
     cursor.commit()

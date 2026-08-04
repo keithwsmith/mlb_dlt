@@ -72,8 +72,15 @@ DIMENSION_MODELS = [
     "dim_season", "dim_team", "dim_venue", "dim_zone", "dim_draft", "dim_award_recipient"
 ]
 intermediate = [
-    "int_pitches_enriched"
+    "int_pitches_enriched","int_team_game_results","int_team_game_results_to_date"
 ]
+# NOTE: `intermediate` above is informational only -- it is never iterated
+# anywhere in run_pipeline(). Actual execution/sequencing is driven entirely
+# by FACT_MODEL_DEPENDENCIES and MART_DEPENDENCIES below. int_pitches_enriched
+# was already wired into FACT_MODEL_DEPENDENCIES for this reason (despite not
+# being a "fact" model) so it gets built, correctly sequenced, before marts
+# run -- int_team_game_results / int_team_game_results_to_date follow that
+# same established pattern below.
 MARTS = [
     "mart_batter_game", "mart_matchups", "mart_pitcher_arsenal", "mart_pitcher_game"
 ]
@@ -90,6 +97,19 @@ FACT_MODEL_DEPENDENCIES = {
     "fact_award_recipient": ["dim_award", "dim_award_recipient"],
     "fact_batted_balls": ["stg_play_events"],
     "int_pitches_enriched": [],
+    # Standings chain -- NOT "fact_"-prefixed models, but placed here
+    # (rather than MART_DEPENDENCIES) because run_all_facts() does
+    # multi-round topological resolution and can handle
+    # int_team_game_results -> dim_team_standings chaining within this
+    # stage. run_all_marts() only does a single-pass check against an
+    # already-finalized completed set, so it can't resolve a dependency
+    # on something else running in the same mart batch -- see
+    # dim_team_standings_by_date in MART_DEPENDENCIES below, which is safe
+    # there specifically because dim_team_standings will already be fully
+    # complete by the time the mart stage starts.
+    "int_team_game_results": [],
+    "int_team_game_results_to_date": ["int_team_game_results"],
+    "dim_team_standings": ["int_team_game_results"],
     "fact_umpire_performance": [
         "dim_challenges",       # challenge outcomes rolled up per game
         "dim_game_umpires",     # home-plate umpire → game_pk mapping
@@ -102,6 +122,10 @@ MART_DEPENDENCIES = {
     "mart_matchups": ["int_pitches_enriched", "fact_batted_balls"],
     "mart_pitcher_arsenal": ["int_pitches_enriched", "dim_pitch_type"],
     "mart_pitcher_game": ["int_pitches_enriched"],
+    # Safe here (rather than the fact stage) because dim_team_standings is
+    # guaranteed fully complete by the start of the mart stage -- see note
+    # in FACT_MODEL_DEPENDENCIES above.
+    "dim_team_standings_by_date": ["dim_team_standings"],
 }
 
 # ==========================================================

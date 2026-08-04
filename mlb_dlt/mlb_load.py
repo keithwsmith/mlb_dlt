@@ -143,20 +143,21 @@ def get_json(url, params=None):
 # ----------------------------
 # Transactions
 # ----------------------------
+# ----------------------------
+# Transactions
+# ----------------------------
 @dlt.resource(
     name="player_transactions",
-    write_disposition="append", primary_key=("transaction_id")
+    write_disposition="merge", primary_key=("transaction_id")
 )
 def transactions_resource(start_year: int = None, end_year: int = None):
     user_provided_range = start_year is not None or end_year is not None
     current_year = datetime.now().year
     max_date = get_max_transaction_date()
-
     if start_year is None:
         start_year = max_date.year if max_date else 1960
     if end_year is None:
         end_year = min(current_year, 2026)
-
     if max_date and not user_provided_range:
         incremental_start = (max_date + timedelta(days=1)).strftime("%m/%d/%Y")
         print(f"Incremental transactions load from {incremental_start}")
@@ -164,14 +165,22 @@ def transactions_resource(start_year: int = None, end_year: int = None):
         incremental_start = None
         print(f"Full transactions load: {start_year}–{end_year}")
 
+    # DEDUP FIX: the MLB Stats API can return the same transaction in more
+    # than one yearly window (its date, effectiveDate, and resolutionDate
+    # can straddle a year boundary), so the same transaction_id can come
+    # back from two different `year` iterations of this loop within a
+    # single run. dlt's merge write disposition is expected to dedupe by
+    # primary_key, but rows sharing a load id have been observed landing
+    # in dw.player_transactions as duplicates — so we dedupe explicitly
+    # here rather than relying on that behavior.
+    seen_ids = set()
+
     for year in range(start_year, end_year + 1):
         if incremental_start and year < max_date.year:
             continue
-
         sd = incremental_start if (incremental_start and year == max_date.year) \
             else f"01/01/{year}"
         ed = f"12/31/{year}"
-
         try:
             data = get_json(
                 f"{BASE_URL}/transactions",
@@ -180,13 +189,18 @@ def transactions_resource(start_year: int = None, end_year: int = None):
         except Exception as e:
             print(f"Transaction fetch failed for {year}: {e}")
             continue
-
         for txn in data.get("transactions", []):
+            txn_id = txn.get("id")
+
+            # Skip transactions we've already yielded this run (see DEDUP FIX above)
+            if txn_id in seen_ids:
+                continue
+            seen_ids.add(txn_id)
+
             # `or {}` guards against explicit None from the API
             player = txn.get("person") or {}
             from_team = txn.get("fromTeam") or {}
             to_team = txn.get("toTeam") or {}
-
             player_id = player.get("id")
             player_name = player.get("fullName")
             description = txn.get("description") or ""
@@ -201,7 +215,7 @@ def transactions_resource(start_year: int = None, end_year: int = None):
 
             # BUG FIX: yield is outside the if block — all records are yielded
             yield {
-                "transaction_id": txn.get("id"),
+                "transaction_id": txn_id,
                 "date": txn.get("date"),
                 "effective_date": txn.get("effectiveDate"),
                 "resolution_date": txn.get("resolutionDate"),
@@ -241,19 +255,48 @@ def seasons_resource(start_year: int = None, end_year: int = None):
 # ----------------------------
 # Teams
 # ----------------------------
-@dlt.resource(name="teams", write_disposition="merge", primary_key=["id"])
+@dlt.resource(name="teams", write_disposition="merge", primary_key=["id", "season"])
 def teams_resource(start_year: int = None, end_year: int = None):
+    """
+    One row per team PER SEASON, not just one row per team ever --
+    league_id, division, venue, etc. can all change season to season
+    (franchise moves between leagues, expansion teams, relocations), so
+    collapsing to a single row per team_id would silently freeze every
+    team at whatever season it happened to get de-duped on.
+
+    BUG FIX: the previous version deduped by team_id with a single
+    `seen_ids` set shared across the ENTIRE start_year..end_year loop, so
+    only the very FIRST season a given team_id was ever seen in (1960,
+    since the loop starts there and virtually every currently-active
+    team_id already existed by then) ever got yielded -- every later
+    season for that team_id was silently skipped. Combined with the old
+    primary_key=["id"] (which would have collapsed even multiple yielded
+    seasons down to one row per id on merge anyway), this left dw.teams
+    with exactly one stale row per team, frozen at season=1960 -- any
+    downstream join that filters on `season` (e.g. resolving a team's
+    league_id for the CURRENT year, to flag interleague games) can never
+    match a present-day season and silently falls through to a default/
+    null value instead of erroring.
+    """
     current_year = datetime.now().year
     start_year = start_year or 1960
     end_year = end_year or current_year
 
-    seen_ids = set()
     for year in range(start_year, end_year + 1):
-        data = get_json(f"{BASE_URL}/teams", {"sportId": 1, "season": year})
-        for team in data["teams"]:
+        try:
+            data = get_json(f"{BASE_URL}/teams", {"sportId": 1, "season": year})
+        except Exception as e:
+            print(f"[teams] fetch failed for season {year}: {e}")
+            continue
+
+        # Dedup is scoped to THIS year's response only (defends against the
+        # API returning a team twice within one call) -- NOT across years,
+        # since we deliberately want one row per team per season now.
+        seen_ids_this_year = set()
+        for team in data.get("teams", []):
             team_id = team.get("id")
-            if team_id and team_id not in seen_ids:
-                seen_ids.add(team_id)
+            if team_id and team_id not in seen_ids_this_year:
+                seen_ids_this_year.add(team_id)
                 yield team
 
 
@@ -548,6 +591,31 @@ def umpires_resource(start_year: int = None, end_year: int = None):
 # ----------------------------
 # Game details helper
 # ----------------------------
+def _to_24_hour(time_str, ampm=None):
+    """
+    Normalize a 12-hour local time to 24-hour "HH:MM" format.
+
+    Accepts either:
+      - a bare hour:minute string plus a separate ampm ("7:05", "PM")
+        (gameData.datetime.time / .ampm from the live feed), or
+      - a single combined string ("7:05 PM")
+        (the boxscore's "first pitch" info label).
+
+    Returns None if the input is missing or doesn't parse cleanly, rather
+    than raising -- a malformed value here should fall through to NULL,
+    not blow up the whole game_details fetch.
+    """
+    if not time_str:
+        return None
+    raw = time_str.strip()
+    if ampm:
+        raw = f"{raw} {ampm.strip()}"
+    try:
+        return datetime.strptime(raw, "%I:%M %p").strftime("%H:%M")
+    except ValueError:
+        return None
+
+
 def fetch_game_details(game):
     game_pk = game.get("gamePk")
     result = {"game_pk": game_pk}
@@ -559,6 +627,7 @@ def fetch_game_details(game):
         live_data = feed.get("liveData", {})
         weather = game_data.get("weather", {})
         game_info = game_data.get("gameInfo", {})
+        game_datetime = game_data.get("datetime", {})
         decisions = live_data.get("decisions", {})
         winner = decisions.get("winner", {})
         loser = decisions.get("loser", {})
@@ -578,7 +647,19 @@ def fetch_game_details(game):
             "weather_temp": weather.get("temp"),
             "weather_wind": weather.get("wind"),
             "attendance": game_info.get("attendance"),
-            "first_pitch": game_info.get("firstPitch"),
+            # gameData.datetime.time / .ampm are the API's own LOCAL
+            # ballpark wall-clock fields (e.g. "7:05" + "PM") -- no
+            # timezone conversion needed. Normalized to 24-hour "HH:MM"
+            # (e.g. "19:05") so first_pitch sorts/parses/compares cleanly
+            # downstream without AM/PM string handling. gameInfo.firstPitch
+            # is a UTC ISO timestamp instead; kept separately below in case
+            # it's useful, but NOT used as first_pitch since mixing UTC
+            # and local values in one column was the root cause of the
+            # bogus hour-23 values (e.g. a 7:05 PM ET game is 23:05 UTC).
+            "first_pitch": _to_24_hour(
+                game_datetime.get("time"), game_datetime.get("ampm")
+            ),
+            "first_pitch_utc_raw": game_info.get("firstPitch"),
             "game_duration_minutes": game_info.get("gameDurationMinutes"),
             "winning_pitcher_id": winner.get("id"),
             "winning_pitcher_name": winner.get("fullName"),
@@ -644,7 +725,15 @@ def fetch_game_details(game):
                     result["attendance"] = int(att_raw.replace(",", "").strip()) \
                         if att_raw.replace(",", "").strip().isdigit() else None
             if not result.get("first_pitch"):
-                result["first_pitch"] = info_map.get("first pitch") or info_map.get("t")
+                # NOTE: previously this also fell back to info_map.get("t"),
+                # but "t" is the game DURATION label (e.g. "3:22"), parsed
+                # a few lines below -- not a time-of-day. That fallback
+                # was silently writing duration strings into first_pitch
+                # whenever a boxscore lacked a "first pitch" label. Fixed
+                # to only use the actual "first pitch" label, and run it
+                # through the same 24-hour normalizer as the live-feed
+                # branch so first_pitch is always "HH:MM" either way.
+                result["first_pitch"] = _to_24_hour(info_map.get("first pitch"))
             if not result.get("game_duration_minutes"):
                 duration_raw = info_map.get("t")  # "3:22" format
                 if duration_raw and ":" in duration_raw:
