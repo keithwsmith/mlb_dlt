@@ -114,6 +114,7 @@ with games as (
     where status__abstract_game_state = 'Final'  -- confirmed literal
       and game_type = 'R'                        -- confirmed literal (regular season)
 	  and status__detailed_state NOT IN ('Postponed','Cancelled')
+	  and is_tie <> 1
       {% if is_incremental() %}
       and try_convert(date, official_date) >= (
           select dateadd(day, -14, max(game_date)) from {{ this }}

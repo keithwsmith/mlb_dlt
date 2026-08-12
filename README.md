@@ -16,6 +16,7 @@
 | [`ETLMonitor`](ETLMonitor/) | ETLMonitor.py | Monitors ETL pipeline runs and reports on load status, row counts, and errors |
 | [`mlb_test_output`](mlb_test_output/) | mlb_test_output.py | Renders dbt test results into a structured report for review |
 | [`mlb_latestgame_agent`](mlb_latestgame_agent/) | check_latest_game.py | Agent that checks for the latest completed MLB game and triggers an incremental load if new games are available |
+| [`cube_semantic_layer_tests`](cube_semantic_layer_tests/) | cube_test_runner.py | Automated test runner for the Cube (cube |
 
         ### dbt Transformation Layer
 
@@ -188,4 +189,4 @@
         ```
 
         ---
-        *Generated 2026-08-03*
+        *Generated 2026-08-11*

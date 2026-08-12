@@ -74,9 +74,14 @@ WITH source_stats AS (
 
 SELECT
     -- Dimension keys
-    ps.player_id AS player_key,
-    ps.team_id AS team_key,
-    ps.season AS season_key,
+    -- FIX: these were previously ps.player_id/ps.team_id/ps.season (raw
+    -- natural values) despite being named like resolved surrogate keys,
+    -- while the LEFT JOINs to dim_player/dim_teams/dim_season below sat
+    -- completely unused. Same bug class as fact_games' home_team_key
+    -- issue. Now genuinely selecting each dimension's real surrogate key.
+    dp.player_version_key AS player_key,
+    dt.team_key AS team_key,
+    ds.season_key AS season_key,
     
     -- Common fields
     ps.season,
@@ -147,7 +152,7 @@ LEFT JOIN {{ ref('dim_player') }} dp
     AND dp.is_current = 1
     
 -- Join to team dimension
-LEFT JOIN {{ ref('dim_team') }} dt
+LEFT JOIN {{ ref('dim_teams') }} dt
     ON ps.team_id = dt.team_id
     AND ps.season = dt.season
     

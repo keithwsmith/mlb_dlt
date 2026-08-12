@@ -1,15 +1,15 @@
-# ETLMonitor
+# cube_semantic_layer_tests
 
-Monitors ETL pipeline runs and reports on load status, row counts, and errors.
+Automated test runner for the Cube (cube.dev) semantic layer data model in mlb-semantic-layer. Exercises every cube's measures, dimensions, and joins (including extends/role-playing cubes) against a running Cube instance, and flags failures separately from known infrastructure issues.
 
 ## File
 
-`ETLMonitor.py`
+`cube_test_runner.py`
 
 ## Usage
 
 ```bash
-python ETLMonitor.py
+python cube_test_runner.py --cubes-dir model\cubes --env-file .env
 ```
 
 ## Setup

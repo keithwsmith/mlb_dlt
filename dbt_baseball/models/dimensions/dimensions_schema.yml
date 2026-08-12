@@ -1337,6 +1337,540 @@ models:
 
     
   # ============================================================
+  # dim_player_stats
+  # ============================================================
+  - name: dim_player_stats
+    description: "One row per player per completed game (general-purpose player stats fact). Countable stats are raw per-game counts, safe to SUM() downstream. Straight pass-through of int_player_game_stats minus first_pitch/first_pitch__v_text -- see dim_player_stats_by_date for cumulative season-to-date totals derived from this table."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [game_pk, player_id]
+    columns:
+      - name: game_pk
+        description: "MLB game identifier. Combined with player_id, forms this model's grain."
+        tests:
+          - not_null
+
+      - name: season
+        description: "Season year the game was played in."
+        tests:
+          - not_null
+
+      - name: game_type_desc
+        description: "Game type code. Pre-filtered to 'R' (regular season) upstream in int_player_game_stats."
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['R']
+
+      - name: game_date
+        description: "Official date of the game."
+        tests:
+          - not_null
+
+      - name: game_datetime
+        description: "Full game timestamp."
+        tests:
+          - not_null
+
+      - name: player_id
+        description: "MLB player ID. Combined with game_pk, forms this model's grain."
+        tests:
+          - not_null
+
+      - name: player_name
+        description: "Player full name."
+        tests:
+          - not_null
+
+      - name: team_id
+        description: "The team player_id was playing for in this game."
+        tests:
+          - not_null
+
+      - name: team_name
+        description: "Display name of team_id."
+        tests:
+          - not_null
+
+      - name: opponent_team_id
+        description: "The team on the other side of this game."
+        tests:
+          - not_null
+
+      - name: opponent_team_name
+        description: "Display name of opponent_team_id."
+        tests:
+          - not_null
+
+      - name: is_home
+        description: "1 if player_id's team was the home team for this game, 0 if away."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: position_code
+        description: "Position player_id appeared at in this game (raw source code)."
+        tests:
+          - not_null
+
+      - name: position_name
+        description: "Display name of position_code."
+        tests:
+          - not_null
+
+      - name: position_abbreviation
+        description: "Abbreviation of position_code (e.g. 'P', 'SS', 'DH')."
+        tests:
+          - not_null
+
+      # NOTE ON PITCHING/FIELDING/BATTING COLUMNS BELOW: none get a
+      # not_null test. A given row will typically have NULLs across
+      # most of one or two of these three categories at once -- e.g. a
+      # position player's row has no pitching stats, a pure pitcher's
+      # row usually has no batting stats. Only that populated values
+      # fall in a valid (non-negative) range is asserted.
+
+      - name: pitching_outs_recorded
+        description: "Innings pitched converted to a raw outs count (whole_innings*3 + partial_outs), safe to SUM(). NULL if player_id didn't pitch."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: pitching_hits_allowed
+        description: "Hits allowed while pitching. NULL if player_id didn't pitch."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: pitching_runs_allowed
+        description: "Runs allowed while pitching. NULL if player_id didn't pitch."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: pitching_earned_runs
+        description: "Earned runs allowed while pitching. NULL if player_id didn't pitch."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: pitching_walks
+        description: "Walks issued while pitching. NULL if player_id didn't pitch."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: pitching_strikeouts
+        description: "Strikeouts recorded while pitching. NULL if player_id didn't pitch."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: pitching_home_runs_allowed
+        description: "Home runs allowed while pitching. NULL if player_id didn't pitch."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: fielding_putouts
+        description: "Putouts recorded. NULL if player_id didn't appear on defense."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: fielding_assists
+        description: "Assists recorded. NULL if player_id didn't appear on defense."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: fielding_errors
+        description: "Errors committed. NULL if player_id didn't appear on defense."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: fielding_chances
+        description: "Total fielding chances (putouts + assists + errors). NULL if player_id didn't appear on defense."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_at_bats
+        description: "At-bats. NULL if player_id didn't appear as a batter."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_runs
+        description: "Runs scored. NULL if player_id didn't appear as a batter."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_hits
+        description: "Hits. NULL if player_id didn't appear as a batter."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_doubles
+        description: "Doubles. NULL if player_id didn't appear as a batter."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_triples
+        description: "Triples. NULL if player_id didn't appear as a batter."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_home_runs
+        description: "Home runs. NULL if player_id didn't appear as a batter."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_rbi
+        description: "RBI. NULL if player_id didn't appear as a batter."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_walks
+        description: "Walks drawn. NULL if player_id didn't appear as a batter."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_strikeouts
+        description: "Strikeouts (as a batter). NULL if player_id didn't appear as a batter."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_stolen_bases
+        description: "Stolen bases. NULL if player_id didn't appear as a batter/baserunner."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_left_on_base
+        description: "Runners left on base while batting. NULL if player_id didn't appear as a batter."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_avg_raw
+        description: "Raw per-game batting average as reported. Reference only -- do NOT SUM across games; see dim_player_stats_by_date for a correctly derived cumulative average."
+        # Not tested -- a rate stat, no meaningful not_null/range assertion here
+
+      - name: pitching_era_raw
+        description: "Raw per-game ERA as reported. Reference only -- do NOT SUM across games; see dim_player_stats_by_date for a correctly derived cumulative ERA."
+        # Not tested -- a rate stat, no meaningful not_null/range assertion here
+
+      - name: start_hour
+        description: "Hour-of-day (24-hour, 0-23) of first pitch. NULL when unparseable/uncaptured for the game."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 23
+
+  # ============================================================
+  # dim_player_stats_by_date
+  # ============================================================
+  - name: dim_player_stats_by_date
+    description: "One row per player per game_date -- end-of-day cumulative SEASON-to-date stats (resets each season; partitioned by player_id, season -- not team_id, so a player traded mid-season still accumulates one continuous season total). If a player appears in a doubleheader, both games' daily stats are collapsed into that one game_date row before the running totals are computed. Rate stats (batting average, ERA, fielding pct) are always derived fresh from the cumulative counting columns, never summed directly. For a row per individual game instead, use dim_player_stats."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [player_id, season, game_date]
+    columns:
+      - name: player_id
+        description: "MLB player ID. Combined with season and game_date, forms this model's grain."
+        tests:
+          - not_null
+
+      - name: player_name
+        description: "Player full name."
+        tests:
+          - not_null
+
+      - name: team_id
+        description: "player_id's team as of this game_date. NOTE: cumulative totals are NOT reset/split by team_id (see model description) -- this column is for that date's context only."
+        tests:
+          - not_null
+
+      - name: team_name
+        description: "Display name of team_id."
+        tests:
+          - not_null
+
+      - name: season
+        description: "Season year. Cumulative totals reset at the start of each season."
+        tests:
+          - not_null
+
+      - name: game_date
+        description: "Calendar date these cumulative totals are as-of (end of day). Doubleheader games are combined into this one date."
+        tests:
+          - not_null
+
+      - name: games_played
+        description: "Number of games played on this specific game_date (2 on a doubleheader date, otherwise 1)."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+
+      - name: games_played_to_date
+        description: "Cumulative games played this season, through and including this date."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+
+      - name: games_batted_to_date
+        description: "Cumulative games this season in which player_id recorded a batting stat, through and including this date. 0, not NULL, if player_id has never batted this season -- this is a COUNT(), unlike the SUM()-based *_to_date stat columns below."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: games_pitched_to_date
+        description: "Cumulative games this season in which player_id recorded a pitching stat, through and including this date. 0, not NULL, if player_id has never pitched this season."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: games_fielded_to_date
+        description: "Cumulative games this season in which player_id recorded a fielding stat, through and including this date. 0, not NULL, if player_id has never fielded this season."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      # NOTE ON *_to_date STAT/RATE COLUMNS BELOW: none get a not_null
+      # test. Unlike games_*_to_date above (COUNT()-based, always >= 0),
+      # these are SUM()-based -- a SUM over an all-NULL group (e.g. a
+      # position player who has never pitched all season) is NULL, not
+      # 0, and stays NULL every date until the player's first game in
+      # that category. Rate columns (era/pct/avg) are NULL under the
+      # same condition, by explicit CASE WHEN in the model.
+
+      - name: pitching_outs_recorded_to_date
+        description: "Cumulative outs recorded pitching this season. NULL until player_id's first pitching appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: pitching_innings_pitched_to_date
+        description: "pitching_outs_recorded_to_date converted back to MLB's display notation (e.g. 41 outs -> '13.2'). Text, not numeric -- do not sort/filter numerically on this column, use pitching_outs_recorded_to_date instead."
+
+      - name: pitching_hits_allowed_to_date
+        description: "Cumulative hits allowed pitching this season. NULL until player_id's first pitching appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: pitching_runs_allowed_to_date
+        description: "Cumulative runs allowed pitching this season. NULL until player_id's first pitching appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: pitching_earned_runs_to_date
+        description: "Cumulative earned runs allowed pitching this season. NULL until player_id's first pitching appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: pitching_walks_to_date
+        description: "Cumulative walks issued pitching this season. NULL until player_id's first pitching appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: pitching_strikeouts_to_date
+        description: "Cumulative strikeouts recorded pitching this season. NULL until player_id's first pitching appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: pitching_home_runs_allowed_to_date
+        description: "Cumulative home runs allowed pitching this season. NULL until player_id's first pitching appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: pitching_era_to_date
+        description: "9 * cumulative earned runs / cumulative innings pitched, derived fresh from the cumulative counts above (never summed directly). NULL until player_id has recorded at least one out pitching this season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: fielding_putouts_to_date
+        description: "Cumulative putouts this season. NULL until player_id's first defensive appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: fielding_assists_to_date
+        description: "Cumulative assists this season. NULL until player_id's first defensive appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: fielding_errors_to_date
+        description: "Cumulative errors this season. NULL until player_id's first defensive appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: fielding_chances_to_date
+        description: "Cumulative fielding chances (putouts + assists + errors) this season. NULL until player_id's first defensive appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: fielding_pct_to_date
+        description: "Cumulative (putouts + assists) / chances this season, derived fresh from the cumulative counts above. Mathematically bounded to [0, 1] since putouts + assists can never exceed chances. NULL until player_id has recorded at least one fielding chance this season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+
+      - name: batting_at_bats_to_date
+        description: "Cumulative at-bats this season. NULL until player_id's first batting appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_runs_to_date
+        description: "Cumulative runs scored this season. NULL until player_id's first batting appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_hits_to_date
+        description: "Cumulative hits this season. NULL until player_id's first batting appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_doubles_to_date
+        description: "Cumulative doubles this season. NULL until player_id's first batting appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_triples_to_date
+        description: "Cumulative triples this season. NULL until player_id's first batting appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_home_runs_to_date
+        description: "Cumulative home runs this season. NULL until player_id's first batting appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_rbi_to_date
+        description: "Cumulative RBI this season. NULL until player_id's first batting appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_walks_to_date
+        description: "Cumulative walks drawn this season. NULL until player_id's first batting appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_strikeouts_to_date
+        description: "Cumulative strikeouts (as a batter) this season. NULL until player_id's first batting appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_stolen_bases_to_date
+        description: "Cumulative stolen bases this season. NULL until player_id's first batting/baserunning appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_left_on_base_to_date
+        description: "Cumulative runners left on base while batting this season. NULL until player_id's first batting appearance of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_avg_to_date
+        description: "Cumulative hits / at-bats this season, derived fresh from the cumulative counts above. Mathematically bounded to [0, 1] since hits can never exceed at-bats. NULL until player_id's first at-bat of the season."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+
+  # ============================================================
   # dim_position
   # ============================================================
   - name: dim_position

@@ -69,10 +69,10 @@ DLT_SCHEMA = "dw"
 DIMENSION_MODELS = [
     "stg_play_events", "stg_rosters","stg_player_transactions","dim_award", "dim_date", "dim_games", "dim_game_status", "dim_game_type",
     "dim_game_umpires","dim_challenges","dim_game_details","dim_pitch_type", "dim_player", "dim_position", "dim_school",
-    "dim_season", "dim_team", "dim_venue", "dim_zone", "dim_draft", "dim_award_recipient"
+    "dim_season", "dim_teams", "dim_venue", "dim_zone", "dim_draft", "dim_award_recipient","dim_player_stats"
 ]
 intermediate = [
-    "int_pitches_enriched","int_team_game_results","int_team_game_results_to_date"
+    "int_pitches_enriched","int_team_game_results","int_team_game_results_to_date","int_player_game_stats"
 ]
 # NOTE: `intermediate` above is informational only -- it is never iterated
 # anywhere in run_pipeline(). Actual execution/sequencing is driven entirely
@@ -87,14 +87,12 @@ MARTS = [
 
 FACT_MODEL_DEPENDENCIES = {
     "fact_games": [
-        "dim_date", "dim_team", "dim_venue",
+        "dim_date", "dim_teams", "dim_venue",
         "dim_season", "dim_game_type", "dim_game_status",
     ],
-    "fact_pitches": ["stg_play_events"],
     "fact_at_bats": ["stg_play_events"],
-    "fact_player_stats": ["dim_player", "dim_team", "dim_season"],
+    "fact_player_stats": ["dim_player", "dim_teams", "dim_season"],
     "fact_draft": ["dim_draft"],
-    "fact_award_recipient": ["dim_award", "dim_award_recipient"],
     "fact_batted_balls": ["stg_play_events"],
     "int_pitches_enriched": [],
     # Standings chain -- NOT "fact_"-prefixed models, but placed here
@@ -764,14 +762,13 @@ def run_custom_audits():
     Separate from run_all_tests()/check_test_results(): those exercise
     dbt's own generic/singular test framework (schema tests, store_failures
     into test_failures). This calls the custom macro-based audits directly
-    — full-table reconciliation checks (e.g. pitch counts between
-    fact_at_bats and fact_pitches) and business-logic consistency checks
+    — full-table reconciliation and business-logic consistency checks
     (e.g. is_no_hitter/is_shutout flags vs. actual runs/hits) that aren't
     expressible as ordinary dbt schema tests. Each check logs its own row
     into silver.test_sql (detail) and dbo.transformation_audit_log (summary,
     surfaced on ETLMonitor's Model Audit tab) as it runs.
 
-    Requires fact_games, fact_pitches, fact_at_bats, and fact_batted_balls
+    Requires fact_games, fact_at_bats, and fact_batted_balls
     to already exist — must run after facts/marts, not before. allow_fail
     is True: an audit finding failures is expected/informational (that's
     the point of the check), not a reason to halt the pipeline. A non-zero

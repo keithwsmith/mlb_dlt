@@ -57,7 +57,6 @@ dim_draft as (
         -- ── Player identifiers ──────────────────────────────────────────
         person__id                                          as person_id,
         bis_player_id                                       as bis_player_id,
-		COALESCE(NULLIF(LTRIM(RTRIM(person__draft_year)), ''), '0') AS person__draft_year,
 		round_pick_number									as round_pick_number,
 		pick_number											as pick_number,
 
@@ -106,7 +105,18 @@ dim_draft as (
         person__is_verified                                 as person_is_verified,
         try_cast(person__mlb_debut_date as date)            as person_mlb_debut_date,
         try_cast(person__last_played_date as date)          as person_last_played_date,
-		COALESCE(NULLIF(LTRIM(RTRIM( cast(person__draft_year as int))), ''), 'Unknown') as person_draft_year,
+        -- FIX: removed the duplicate person__draft_year column (was here,
+        -- fallback '0') that used to sit above person_id -- this is now
+        -- the ONLY draft-year column. Also switched the hard cast(...) to
+        -- try_cast(...), matching every other defensive parse in this
+        -- file -- the old hard cast would throw a real SQL error on any
+        -- non-numeric person__draft_year value instead of falling back
+        -- gracefully like TRY_CAST does.
+        --
+        -- fact_draft.sql currently joins on d.person__draft_year (the
+        -- column just removed) -- that join needs updating to
+        -- d.person_draft_year as a follow-up.
+		COALESCE(NULLIF(LTRIM(RTRIM( try_cast(person__draft_year as int))), ''), '0') as person_draft_year,
         -- ── Player position ─────────────────────────────────────────────
         person__primary_position__code                      as person_primary_position_code,
         person__primary_position__name                      as person_primary_position_name,

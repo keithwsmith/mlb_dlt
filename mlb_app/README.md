@@ -75,4 +75,4 @@ from the queries in `queries.py`.
 [mlb_dlt](https://github.com/keithwsmith/mlb_dlt.git) — MLB Stats API → SQL Server data warehouse
 
 ---
-*Generated 2026-08-03*
+*Generated 2026-08-11*

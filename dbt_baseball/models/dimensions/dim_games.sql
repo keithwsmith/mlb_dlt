@@ -14,6 +14,7 @@
 WITH source AS (
     SELECT *
     FROM {{ source('dw', 'games') }}
+	where status__detailed_state NOT IN ('Cancelled','Postponed')
 ),
 
 typed AS (

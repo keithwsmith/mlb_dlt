@@ -233,6 +233,103 @@ def transactions_resource(start_year: int = None, end_year: int = None):
             }
 
 
+def get_all_player_transactions() -> list:
+    """
+    Reads all player-attributed transactions back from dw.player_transactions.
+    Source of truth for player_season_transactions_resource below, which
+    reshapes/enriches already-loaded transaction data (adding a derived
+    `season`) rather than re-fetching from the API and duplicating
+    transactions_resource's fetch logic.
+    """
+    try:
+        conn = pyodbc.connect(DW_CONNECTION_STRING, timeout=10)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                transaction_id,
+                player_id,
+                player_name,
+                from_team_id,
+                from_team_name,
+                to_team_id,
+                to_team_name,
+                type_code,
+                type_desc,
+                description,
+                date,
+                effective_date,
+                resolution_date
+            FROM dw.player_transactions
+            WHERE player_id IS NOT NULL
+        """)
+        columns = [c[0] for c in cursor.description]
+        rows = cursor.fetchall()
+        conn.close()
+        result = [dict(zip(columns, row)) for row in rows]
+        print(f"[dw.player_transactions] {len(result)} player-attributed transactions available.")
+        return result
+    except pyodbc.Error as e:
+        print(f"Could not query dw.player_transactions: {e}")
+        print("   Falling back to empty set — nothing will be loaded.")
+        return []
+
+
+# ----------------------------
+# Player-Season Transactions (one row per player+season+transaction)
+# ----------------------------
+@dlt.resource(
+    name="player_season_transactions",
+    write_disposition="merge",
+    primary_key=("player_id", "season", "transaction_id"),
+)
+def player_season_transactions_resource():
+    """
+    One row per (player, season, transaction) -- every player-attributed
+    transaction event, fully expanded (no grouping/aggregation/collapsing).
+    Each transaction already belongs to exactly one player and one date,
+    so this is transactions_resource's data with a derived `season`
+    attached, filtered to player-only transactions.
+
+    NOTE on `season`: derived as the calendar year of effective_date
+    (falling back to date) -- i.e. an offseason move is attributed to the
+    year it actually happened in, not necessarily the upcoming season it
+    might be "for". If that doesn't match how season boundaries are
+    defined elsewhere (e.g. dim_player.sql), this is the place to adjust.
+    """
+    for txn in get_all_player_transactions():
+        player_id = txn.get("player_id")
+        if player_id is None:
+            continue
+
+        txn_date = txn.get("effective_date") or txn.get("date")
+        if txn_date is None:
+            print(f"Skipping txn {txn.get('transaction_id')} for player {player_id}: no date to derive season from")
+            continue
+
+        try:
+            season = txn_date.year if hasattr(txn_date, "year") else int(str(txn_date)[:4])
+        except (ValueError, TypeError):
+            print(f"Skipping txn {txn.get('transaction_id')} for player {player_id}: unparseable date {txn_date!r}")
+            continue
+
+        yield {
+            "player_id": player_id,
+            "season": season,
+            "transaction_id": txn.get("transaction_id"),
+            "player_name": txn.get("player_name"),
+            "from_team_id": txn.get("from_team_id"),
+            "from_team_name": txn.get("from_team_name"),
+            "to_team_id": txn.get("to_team_id"),
+            "to_team_name": txn.get("to_team_name"),
+            "type_code": txn.get("type_code"),
+            "type_desc": txn.get("type_desc"),
+            "description": txn.get("description"),
+            "date": txn.get("date"),
+            "effective_date": txn.get("effective_date"),
+            "resolution_date": txn.get("resolution_date"),
+        }
+
+
 # ----------------------------
 # Seasons
 # ----------------------------
@@ -379,6 +476,9 @@ def fetch_game_pbp(year, game_pk):
         return []
 
 
+# ----------------------------
+# Players (40-man rosters)
+# ----------------------------
 # ----------------------------
 # Players (40-man rosters)
 # ----------------------------
@@ -1266,6 +1366,7 @@ if __name__ == "__main__":
         "rosters": lambda: rosters_resource(args.start_year, args.end_year),
         "awards": award_recipients_resource,
         "player_transactions": lambda: transactions_resource(args.start_year, args.end_year),
+        "player_season_transactions": player_season_transactions_resource,
         "umpires": lambda: umpires_resource(args.start_year, args.end_year),
         "game_details": lambda: game_details_resource(args.start_year, args.end_year),
     }

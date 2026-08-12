@@ -5,19 +5,20 @@
     )
 }}
 
-{% if is_incremental() %}
-    {% set max_load_query %}
-        select max(load_id) from {{ this }}
-    {% endset %}
-    {% set max_load_id = run_query(max_load_query).columns[0][0] %}
-{% endif %}
+-- FIX: switched from a run_query()-based pre-fetch of max load_id to the
+-- same in-query subquery pattern used everywhere else in this project
+-- (dim_award_recipient, fact_award_recipient, fact_at_bats, etc.):
+-- WHERE load_id > (SELECT MAX(load_id) FROM {{ this }}), evaluated by
+-- the warehouse as part of the main query rather than as a separate
+-- dbt-orchestrated query beforehand. Same result, just consistent with
+-- the rest of the project.
 
 with batted_balls as (
     select * from {{ ref('stg_play_events') }}
     where is_in_play = 1
       and exit_velocity is not null
     {% if is_incremental() %}
-        and load_id > '{{ max_load_id }}'
+        and load_id > (select max(load_id) from {{ this }})
     {% endif %}
 )
 select

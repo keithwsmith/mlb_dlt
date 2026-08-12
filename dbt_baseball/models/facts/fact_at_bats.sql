@@ -1,3 +1,24 @@
+{{
+    config(
+        materialized         = 'incremental',
+        unique_key            = ['game_pk', 'at_bat_index', 'batter_id'],
+        incremental_strategy  = 'merge'
+    )
+}}
+
+-- FIX: this model was previously missing this config() block entirely,
+-- despite using is_incremental() below -- meaning that filter was always
+-- evaluating false and this silently full-rebuilt on every run instead
+-- of incrementing. unique_key matches this model's actual grain (the
+-- GROUP BY at the bottom): game_pk + at_bat_index + batter_id -- season
+-- omitted since those three columns alone are already unique.
+--
+-- ASSUMPTIONS TO VERIFY (same caveats as elsewhere in this project):
+-- 1. incremental_strategy = 'merge' needs your adapter/warehouse to
+--    support MERGE. If not, switch to 'delete+insert'.
+-- 2. load_id is assumed sortable via simple string/numeric '>' comparison,
+--    consistent with every other incremental model in this project.
+
 with pitches as (
     select
         *,

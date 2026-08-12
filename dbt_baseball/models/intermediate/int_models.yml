@@ -48,7 +48,7 @@ models:
           - not_null
           - accepted_values:
               arguments:
-                values: ['R']
+                values: ['Regular Season']
 
       - name: game_date
         description: Official date of the game (used for chronological ordering throughout this model).
@@ -124,7 +124,7 @@ models:
           - not_null
           - accepted_values:
               arguments:
-                values: ['D', 'N']
+                values: ['day', 'night']
 
       - name: start_hour
         description: >
@@ -255,7 +255,7 @@ models:
           - not_null
           - accepted_values:
               arguments:
-                values: ['D', 'N']
+                values: ['day', 'night']
       - name: start_hour
         description: See int_team_game_results.start_hour.
         tests:
@@ -316,14 +316,14 @@ models:
               arguments:
                 min_value: 0
 
-      - name: wins_to_date_doubleheader
+      - name: wins_to_date_doubleheader_y
         description: team_id's cumulative wins for this double_header value, through and including this game.
         tests:
           - not_null
           - dbt_utils.accepted_range:
               arguments:
                 min_value: 0
-      - name: losses_to_date_doubleheader
+      - name: losses_to_date_doubleheader_y
         description: team_id's cumulative losses for this double_header value, through and including this game.
         tests:
           - not_null
@@ -331,14 +331,14 @@ models:
               arguments:
                 min_value: 0
 
-      - name: wins_to_date_day_night
+      - name: wins_to_date_day_night_day
         description: team_id's cumulative wins for this day_night value, through and including this game.
         tests:
           - not_null
           - dbt_utils.accepted_range:
               arguments:
                 min_value: 0
-      - name: losses_to_date_day_night
+      - name: losses_to_date_day_night_night
         description: team_id's cumulative losses for this day_night value, through and including this game.
         tests:
           - not_null
@@ -420,6 +420,297 @@ models:
           - dbt_utils.accepted_range:
               arguments:
                 min_value: 0
+
+  # ────────────────────────────────────────────────────────────────────
+  - name: int_player_game_stats
+    description: >
+      Intermediate model. One row per player per completed game
+      (batting/pitching/fielding box score line), with season/date/team
+      context already joined in -- mirrors the shape of
+      int_team_game_results.sql for the player level. Filters to
+      game_type = 'R' (regular season) and dim_games.is_final = 1,
+      matching int_team_game_results.sql. A given row will typically have
+      NULLs across most of the pitching/fielding/batting columns at once
+      -- e.g. a position player's row has no pitching stats, a
+      pure-pitcher's row has no batting stats -- so no not_null test is
+      applied to those category-specific columns; only that populated
+      values fall in a valid (non-negative) range. Materialized
+      incremental (merge on game_pk, player_id) with a 3-day date
+      lookback to catch late box-score corrections -- see model header;
+      unlike int_team_game_results.sql this model has no running-counter
+      column (like series_id) that needs prior-batch state, so the
+      lookback exists purely to re-pick-up corrected stats, not for
+      correctness of the window itself.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [game_pk, player_id]
+    columns:
+      - name: game_pk
+        description: MLB game identifier. Combined with player_id, forms this model's grain.
+        tests: [not_null]
+
+      - name: season
+        description: Season year the game was played in.
+        tests: [not_null]
+
+      - name: game_type_desc
+        description: >
+          Raw single-letter game_type code from dw.games. This model
+          filters to 'R' only, matching int_team_game_results.sql --
+          postseason/spring training games are excluded before this
+          column is even selected.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['R']
+
+      - name: game_date
+        description: Official date of the game.
+        tests: [not_null]
+
+      - name: game_datetime
+        description: Full game timestamp.
+        tests: [not_null]
+
+      - name: player_id
+        description: The player this row represents. Combined with game_pk, forms this model's grain.
+        tests: [not_null]
+
+      - name: player_name
+        description: Display name of player_id.
+        tests: [not_null]
+
+      - name: team_id
+        description: The team player_id was playing for in this game.
+        tests: [not_null]
+
+      - name: team_name
+        description: Display name of team_id.
+        tests: [not_null]
+
+      - name: opponent_team_id
+        description: The team on the other side of this game, derived from is_home vs. dim_games' home/away team ids (see model header assumption #3).
+        tests: [not_null]
+
+      - name: opponent_team_name
+        description: Display name of opponent_team_id.
+        tests: [not_null]
+
+      - name: is_home
+        description: 1 if player_id's team was the home team for this game, 0 if away.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+      - name: position_code
+        description: Position player_id appeared at in this game (raw source code).
+        tests: [not_null]
+
+      - name: position_name
+        description: Display name of position_code.
+        tests: [not_null]
+
+      - name: position_abbreviation
+        description: Abbreviation of position_code (e.g. 'P', 'SS', 'DH').
+        tests: [not_null]
+
+      - name: pitching_outs_recorded
+        description: >
+          pitching_innings_pitched converted from MLB's fractional-outs
+          notation (e.g. '6.1' = 6 innings + 1 out) into a raw outs count
+          (whole_innings*3 + partial_outs), so it can be safely SUMmed
+          downstream -- see model header assumption #2 for why summing
+          the raw notation directly would silently produce wrong totals.
+          NULL for any row where the player didn't pitch.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: pitching_hits_allowed
+        description: Hits allowed while pitching in this game. NULL if player_id didn't pitch.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: pitching_runs_allowed
+        description: Runs allowed while pitching in this game. NULL if player_id didn't pitch.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: pitching_earned_runs
+        description: Earned runs allowed while pitching in this game. NULL if player_id didn't pitch.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: pitching_walks
+        description: Walks issued while pitching in this game. NULL if player_id didn't pitch.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: pitching_strikeouts
+        description: Strikeouts recorded while pitching in this game. NULL if player_id didn't pitch.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: pitching_home_runs_allowed
+        description: Home runs allowed while pitching in this game. NULL if player_id didn't pitch.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: fielding_putouts
+        description: Putouts recorded in this game. NULL if player_id didn't appear on defense.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: fielding_assists
+        description: Assists recorded in this game. NULL if player_id didn't appear on defense.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: fielding_errors
+        description: Errors committed in this game. NULL if player_id didn't appear on defense.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: fielding_chances
+        description: Total fielding chances (putouts + assists + errors) in this game. NULL if player_id didn't appear on defense.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_at_bats
+        description: At-bats in this game. NULL if player_id didn't appear as a batter.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_runs
+        description: Runs scored in this game. NULL if player_id didn't appear as a batter.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_hits
+        description: Hits in this game. NULL if player_id didn't appear as a batter.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_doubles
+        description: Doubles in this game. NULL if player_id didn't appear as a batter.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_triples
+        description: Triples in this game. NULL if player_id didn't appear as a batter.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_home_runs
+        description: Home runs in this game. NULL if player_id didn't appear as a batter.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_rbi
+        description: RBI in this game. NULL if player_id didn't appear as a batter.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_walks
+        description: Walks drawn in this game. NULL if player_id didn't appear as a batter.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_strikeouts
+        description: Strikeouts (as a batter) in this game. NULL if player_id didn't appear as a batter.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_stolen_bases
+        description: Stolen bases in this game. NULL if player_id didn't appear as a batter/baserunner.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_left_on_base
+        description: Runners left on base while player_id was batting, in this game. NULL if player_id didn't appear as a batter.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: batting_avg_raw
+        description: >
+          Raw per-game batting average as loaded from the source. NOT
+          summed/aggregated downstream (a per-game rate stat, not a
+          counting stat) -- see dim_player_stats_by_date for the correct
+          way to derive average over a date range from the counting
+          columns above.
+
+      - name: pitching_era_raw
+        description: >
+          Raw per-game ERA as loaded from the source. NOT
+          summed/aggregated downstream (a per-game rate stat, not a
+          counting stat) -- see dim_player_stats_by_date for the correct
+          way to derive ERA over a date range from the counting columns
+          above.
+
+      - name: first_pitch
+        description: First-pitch timestamp for this game, joined from game_details for parity with int_team_game_results.sql. NULL when game_details has no matching row for game_pk.
+
+      - name: first_pitch__v_text
+        description: First-pitch time as a raw text field from game_details, preferred over `first_pitch` when parsing start_hour (see that column). NULL when game_details has no matching row for game_pk.
+
+      - name: start_hour
+        description: >
+          Hour-of-day (24-hour, 0-23) of first pitch, parsed the same way
+          as int_team_game_results.start_hour (see that column for
+          details). NULL when first_pitch couldn't be parsed or was never
+          captured for the game.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 23
 
   # ────────────────────────────────────────────────────────────────────
   - name: int_pitches_enriched

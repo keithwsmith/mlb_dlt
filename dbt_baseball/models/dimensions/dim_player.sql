@@ -97,15 +97,58 @@ state_changes as (
 -- 3b. Number each state-change row by which "stint" with its
 --     team_id it represents for that player. A player back
 --     with the same team for a 2nd time gets stint_number = 2.
+--
+--     IMPORTANT: team_stint_number must only increment when the
+--     player actually LEAVES and RETURNS to a team, not on every
+--     tracked-attribute change (jersey/position/status) that
+--     happens to occur while they're still on the same team --
+--     otherwise a same-team jersey/status change consumes a
+--     "stint slot" that a later genuine trade-back needs, and
+--     the stint numbering drifts out of sync with
+--     team_move_dates below (reintroducing the exact
+--     date-misattribution bug this fix is meant to solve).
+--
+--     Approach: flag each row where team_id actually differs
+--     from the player's immediately preceding state-change row
+--     (a "new arrival"), run a cumulative count of those flags
+--     per player to group same-team runs into contiguous
+--     "blocks", then dense_rank the blocks per (player_id,
+--     team_id) to get the true Nth-stint-with-this-team number.
+--     All rows within a block (including same-team attribute-
+--     only changes) share that block's stint number.
 -- ============================================================
-state_changes_numbered as (
+state_changes_with_arrival_flag as (
     select
         sc.*,
-        row_number() over (
-            partition by sc.player_id, sc.team_id
-            order by sc.season, sc._dlt_load_id
-        ) as team_stint_number
+        case
+            when sc.team_id is distinct from lag(sc.team_id) over (
+                partition by sc.player_id
+                order by sc.season, sc._dlt_load_id
+            ) then 1
+            else 0
+        end as is_new_team_arrival
     from state_changes sc
+),
+
+state_changes_blocked as (
+    select
+        *,
+        sum(is_new_team_arrival) over (
+            partition by player_id
+            order by season, _dlt_load_id
+            rows between unbounded preceding and current row
+        ) as team_block_id
+    from state_changes_with_arrival_flag
+),
+
+state_changes_numbered as (
+    select
+        *,
+        dense_rank() over (
+            partition by player_id, team_id
+            order by team_block_id
+        ) as team_stint_number
+    from state_changes_blocked
 ),
 
 
