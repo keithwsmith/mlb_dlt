@@ -89,6 +89,21 @@ select
     end as trajectory_abbrev,
 
     -- outcome
-    is_out
+    is_out,
+
+    -- plate-appearance result for this ball in play
+    -- (NULL for games loaded before mlb_load.py saved results)
+    result_event_type,                              -- e.g. single, double, field_out, grounded_into_double_play
+    result_event,
+    result_description,
+    result_rbi,
+    cast(result_is_hit as int)                      as is_hit,
+    case result_event_type
+        when 'single'   then 1
+        when 'double'   then 2
+        when 'triple'   then 3
+        when 'home_run' then 4
+        else 0
+    end                                             as total_bases
 
 from batted_balls

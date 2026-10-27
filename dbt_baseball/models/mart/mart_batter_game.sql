@@ -8,6 +8,11 @@
 /*
     Batter performance per game.
     Plate discipline, quality of contact, and batted ball profile.
+
+    NEW: box-score line (at-bats, hits, home runs, RBI, walks, strikeouts,
+    total bases) and AVG / OBP / SLG for the game, from the pa_* flags in
+    int_pitches_enriched. 0 / NULL for games loaded before mlb_load.py
+    saved plate-appearance results.
 */
 
 with pitches as (
@@ -72,7 +77,22 @@ pitch_agg as (
 
         -- count
         sum(cast(is_two_strike as int))                 as two_strike_pitches,
-        sum(case when is_two_strike = 1 and is_whiff = 1 then 1 else 0 end) as two_strike_whiffs
+        sum(case when is_two_strike = 1 and is_whiff = 1 then 1 else 0 end) as two_strike_whiffs,
+
+        -- box-score line (flags are set only on the final pitch of a PA)
+        sum(pa_is_complete)                             as completed_pas,
+        sum(pa_is_at_bat)                               as at_bats,
+        sum(pa_is_hit)                                  as hits,
+        sum(case when pa_is_complete = 1 and result_event_type = 'single' then 1 else 0 end) as singles,
+        sum(case when pa_is_complete = 1 and result_event_type = 'double' then 1 else 0 end) as doubles,
+        sum(case when pa_is_complete = 1 and result_event_type = 'triple' then 1 else 0 end) as triples,
+        sum(pa_is_home_run)                             as home_runs,
+        sum(pa_rbi)                                     as rbi,
+        sum(pa_is_walk)                                 as walks,
+        sum(pa_is_strikeout)                            as strikeouts,
+        sum(pa_is_hit_by_pitch)                         as hit_by_pitch,
+        sum(case when pa_is_complete = 1 and result_event_type = 'sac_fly' then 1 else 0 end) as sac_flies,
+        sum(pa_total_bases)                             as total_bases
 
     from pitches
     group by game_pk, season, batter_id
@@ -131,7 +151,13 @@ select
     round(cast(b.barrels as float) / nullif(b.batted_ball_events, 0), 3)    as barrel_pct,
     round(cast(b.ground_balls as float) / nullif(b.batted_ball_events, 0), 3) as gb_pct,
     round(cast(b.line_drives as float) / nullif(b.batted_ball_events, 0), 3)  as ld_pct,
-    round(cast(b.fly_balls as float) / nullif(b.batted_ball_events, 0), 3)    as fb_pct
+    round(cast(b.fly_balls as float) / nullif(b.batted_ball_events, 0), 3)    as fb_pct,
+
+    -- game slash line
+    round(cast(p.hits as float) / nullif(p.at_bats, 0), 3)                  as batting_avg,
+    round(cast(p.hits + p.walks + p.hit_by_pitch as float)
+          / nullif(p.at_bats + p.walks + p.hit_by_pitch + p.sac_flies, 0), 3) as on_base_pct,
+    round(cast(p.total_bases as float) / nullif(p.at_bats, 0), 3)           as slugging_pct
 
 from pitch_agg p
 left join bb_agg b

@@ -2048,9 +2048,9 @@ models:
           - not_null
 
   # ============================================================
-  # dim_team
+  # dim_teams
   # ============================================================
-  - name: dim_team
+  - name: dim_teams
     description: "Team dimension keyed by team + season."
     columns:
       - name: team_key

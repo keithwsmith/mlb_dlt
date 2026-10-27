@@ -72,6 +72,14 @@ def get_game_details(game_pk: int):
     return row
 
 
+@app.get("/api/games/{game_pk}/matchup")
+def get_game_matchup(game_pk: int):
+    row = run_query_one(queries.GAME_MATCHUP, (game_pk,))
+    if not row:
+        not_found("Game")
+    return row
+
+
 @app.get("/api/games/{game_pk}/umpires")
 def get_game_umpires(game_pk: int):
     return run_query(queries.GAME_UMPIRES, (game_pk,))
@@ -92,12 +100,17 @@ def get_game_venue(game_pk: int):
 
 @app.get("/api/games/{game_pk}/players")
 def get_game_players(game_pk: int):
-    return run_query(queries.GAME_PLAYERS, (game_pk,))
+    return run_query(queries.GAME_PLAYER_DETAIL, (game_pk,))
 
 
 @app.get("/api/games/{game_pk}/players-stats")
 def get_game_players_stats(game_pk: int):
     return run_query(queries.GAME_PLAYERS_STATS, (game_pk,))
+
+
+@app.get("/api/games/{game_pk}/team-records")
+def get_game_team_records(game_pk: int):
+    return run_query(queries.GAME_TEAM_RECORDS, (game_pk,))
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +156,11 @@ def get_player_awards(player_id: int):
     return run_query(queries.PLAYER_AWARDS, (player_id,))
 
 
+@app.get("/api/players/{player_id}/transactions")
+def get_player_transactions(player_id: int):
+    return run_query(queries.PLAYER_TRANSACTIONS, (player_id,))
+
+
 @app.get("/api/players/{player_id}/season-stats")
 def get_player_season_stats(player_id: int):
     return run_query(queries.PLAYER_SEASON_STATS, (player_id,))
@@ -150,20 +168,21 @@ def get_player_season_stats(player_id: int):
 
 @app.get("/api/players/{player_id}/ytd")
 def get_player_ytd(player_id: int, game_pk: int, role: str = "batter"):
-    """YTD popup: resolve the season from game_pk, then pull from whichever
-    dw view matches the player's role in that game (role is passed by the
-    frontend — it already knows this per-row, from GAME_PLAYERS_STATS'
-    player_role classification — rather than re-deriving it here)."""
+    """YTD popup. role ("batter"/"pitcher") comes from the frontend, which
+    already knows it per-row from GAME_PLAYERS_STATS' player_role.
+
+    Both PLAYER_YTD_BATTING and PLAYER_YTD_PITCHING sum
+    silver.int_player_game_stats for every game this season (same game
+    type) up to and including game_pk. Their placeholders are, in order:
+        cur.game_pk = ?   then   s.player_id = ?
+    so the params MUST be (game_pk, player_id).
+    """
     game = run_query_one(queries.GAME_SEASON, (game_pk,))
     if not game:
         not_found("Game")
-    season = game["season"]
 
-    if role == "pitcher":
-        row = run_query_one(queries.PLAYER_YTD_PITCHING, (player_id, season))
-    else:
-        row = run_query_one(queries.PLAYER_YTD_BATTING, (player_id, season))
-    return row or {}
+    sql = queries.PLAYER_YTD_PITCHING if role == "pitcher" else queries.PLAYER_YTD_BATTING
+    return run_query_one(sql, (game_pk, player_id)) or {}
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +203,24 @@ def get_team_venue(team_id: int):
     if not row:
         not_found("Venue")
     return row
+
+
+@app.get("/api/teams/{team_id}/players")
+def get_team_players(team_id: int, game_pk: int | None = None):
+    """Players tab "Team" dropdown: everyone who appeared for this team in
+    one season -- the season of game_pk when a game is selected, otherwise
+    the team's most recent season with data."""
+    if game_pk:
+        game = run_query_one(queries.GAME_SEASON, (game_pk,))
+        if not game:
+            not_found("Game")
+        season = game["season"]
+    else:
+        row = run_query_one(queries.TEAM_LATEST_SEASON, (team_id,))
+        season = row["season"] if row else None
+        if season is None:
+            return []
+    return run_query(queries.TEAM_PLAYERS, (team_id, season))
 
 
 @app.get("/api/teams/{team_id}/draft")

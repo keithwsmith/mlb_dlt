@@ -8,6 +8,12 @@
 /*
     Pitcher performance per game.
     Core rate stats: K%, BB%, whiff%, chase%, zone%, first-pitch strike%.
+
+    NEW: batters faced, hits / home runs / walks / strikeouts allowed and the
+    K% and BB% the header always promised, from the pa_* flags in
+    int_pitches_enriched. A plate appearance is credited to whoever threw
+    its final pitch. 0 / NULL for games loaded before mlb_load.py saved
+    plate-appearance results.
 */
 with pitches as (
     select * from {{ ref('int_pitches_enriched') }}
@@ -66,7 +72,15 @@ pitcher_game as (
         avg(pfx_x)                                      as avg_h_break,
         avg(pfx_z)                                      as avg_v_break,
         -- extension
-        avg(extension)                                  as avg_extension
+        avg(extension)                                  as avg_extension,
+        -- plate-appearance outcomes allowed (final pitch only)
+        sum(pa_is_complete)                             as batters_faced,
+        sum(pa_is_at_bat)                               as at_bats_against,
+        sum(pa_is_hit)                                  as hits_allowed,
+        sum(pa_is_home_run)                             as home_runs_allowed,
+        sum(pa_is_walk)                                 as walks_allowed,
+        sum(pa_is_hit_by_pitch)                         as hit_batters,
+        sum(pa_is_strikeout)                            as strikeouts
     from pitches
     group by game_pk, season, pitcher_id
 )
@@ -82,5 +96,9 @@ select
     round(cast(first_pitch_strikes as float) / nullif(first_pitches, 0), 3) as first_pitch_strike_pct,
     round(cast(swings as float) / nullif(total_pitches, 0), 3)         as swing_pct,
     round(cast(called_strikes as float) / nullif(total_pitches, 0), 3) as csw_pct,
-    round(cast(edge_pitches as float) / nullif(total_pitches, 0), 3)   as edge_pct
+    round(cast(edge_pitches as float) / nullif(total_pitches, 0), 3)   as edge_pct,
+    -- outcome rates
+    round(cast(strikeouts as float) / nullif(batters_faced, 0), 3)      as strikeout_pct,
+    round(cast(walks_allowed as float) / nullif(batters_faced, 0), 3)   as walk_pct,
+    round(cast(hits_allowed as float) / nullif(at_bats_against, 0), 3)  as batting_avg_against
 from pitcher_game

@@ -28,6 +28,17 @@ renamed as (
         is_pitch,
         is_in_play,
 
+        -- plate-appearance result (from play.result in mlb_load.py).
+        -- Repeated on every pitch of the at-bat; is_final_pitch marks the
+        -- pitch that produced it. NULL for games loaded before these fields
+        -- existed (re-load them with: play_events --reload).
+        result_event_type,                          -- e.g. single, home_run, strikeout, walk, field_out
+        result_event,                               -- e.g. Single, Home Run
+        result_description,
+        result_rbi,
+        result_is_hit,
+        is_final_pitch,
+
         -- pitch result
         details__code                               as pitch_result_code,
         details__description                        as pitch_result_description,

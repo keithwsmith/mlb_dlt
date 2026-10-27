@@ -42,12 +42,19 @@ typed AS (
         teams__home__team__id                      AS home_team_id,
 		COALESCE(NULLIF(LTRIM(RTRIM(teams__home__team__name)), ''), '') AS home_team_name,
         teams__home__score                         AS home_score,
-        teams__home__is_winner                     AS home_is_winner,
+        -- A tied score has no winner: force both is_winner flags to 0.
+        CAST(CASE
+            WHEN teams__home__score = teams__away__score THEN 0
+            ELSE teams__home__is_winner
+        END AS BIT)                                AS home_is_winner,
 
         teams__away__team__id                      AS away_team_id,
 		COALESCE(NULLIF(LTRIM(RTRIM(teams__away__team__name)), ''), '') AS away_team_name,
         teams__away__score                         AS away_score,
-        teams__away__is_winner                     AS away_is_winner,
+        CAST(CASE
+            WHEN teams__home__score = teams__away__score THEN 0
+            ELSE teams__away__is_winner
+        END AS BIT)                                AS away_is_winner,
 
         -- Venue
 		COALESCE(NULLIF(LTRIM(RTRIM(venue__id)), ''), '') AS venue_id,
@@ -62,7 +69,12 @@ typed AS (
         series_description,
 
         -- Flags
-        is_tie,
+        -- Equal scores = tie. (NULL scores -- e.g. a game not played yet --
+        -- never compare equal, so those keep the source value.)
+        CAST(CASE
+            WHEN teams__home__score = teams__away__score THEN 1
+            ELSE is_tie
+        END AS BIT)                                AS is_tie,
         public_facing,
 
         -- Audit

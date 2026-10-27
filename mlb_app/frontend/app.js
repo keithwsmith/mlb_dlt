@@ -1,7 +1,7 @@
 const { useState, useEffect, useCallback } = React;
 
 // Change this if your FastAPI server runs somewhere else.
-const API_BASE = "http://localhost:8000/api";
+const API_BASE = "http://localhost:8001/api";
 
 async function api(path) {
   const res = await fetch(`${API_BASE}${path}`);
@@ -107,6 +107,21 @@ function PlayerDraftModal({ playerId, playerName, onClose }) {
   );
 }
 
+function PlayerTransactionsModal({ playerId, playerName, onClose }) {
+  const transactions = useApi(`/players/${playerId}/transactions`);
+  const columns = [
+    { key: "date", label: "Date" },
+    { key: "description", label: "Description" },
+  ];
+  return (
+    <Modal title={`${playerName || "Player " + playerId} — Transactions`} onClose={onClose}>
+      {transactions.loading ? <Loading /> : transactions.error ? <ErrorBox message={transactions.error} /> :
+        !transactions.data?.length ? <EmptyState label="No transactions on record" /> :
+        <DataTable rows={transactions.data} columns={columns} />}
+    </Modal>
+  );
+}
+
 function KVGrid({ obj, narrow }) {
   if (!obj) return <EmptyState />;
   const entries = Object.entries(obj).filter(([k]) => !k.startsWith("_"));
@@ -125,13 +140,13 @@ function KVGrid({ obj, narrow }) {
   );
 }
 
-function DataTable({ rows, columns, onRowClick, compact }) {
+function DataTable({ rows, columns, onRowClick, compact, wrap }) {
   if (!rows) return <Loading />;
   if (!rows.length) return <EmptyState />;
   const cols = columns || Object.keys(rows[0]);
   return (
     <div className="table-scroll">
-      <table className={"data-table" + (compact ? " data-table--compact" : "")}>
+      <table className={"data-table" + (compact ? " data-table--compact" : "") + (wrap ? " data-table--wrap" : "")}>
         <thead>
           <tr>{cols.map((c) => <th key={c.key || c}>{c.label || String(c).replace(/_/g, " ")}</th>)}</tr>
         </thead>
@@ -153,7 +168,7 @@ function DataTable({ rows, columns, onRowClick, compact }) {
 
 // Columns dropped outright from the Game Details panel — internal ids
 // that aren't useful to display (pitcher names are shown instead).
-const GAME_DETAILS_HIDE = new Set(["winning_pitcher_id", "losing_pitcher_id", "save_pitcher_id"]);
+const GAME_DETAILS_HIDE = new Set(["winning_pitcher_id", "losing_pitcher_id", "save_pitcher_id", "first_pitch"]);
 
 // "1960-08-18T17:00:00+00:00" -> "8/18/1960 5:00 PM". Parsed from the raw
 // string (not `new Date(...)`) so we render the wall-clock time the DB
@@ -167,6 +182,17 @@ function formatFirstPitch(v) {
   const ampm = h >= 12 ? "PM" : "AM";
   h = h % 12 || 12;
   return `${parseInt(month, 10)}/${parseInt(day, 10)}/${year} ${h}:${minute} ${ampm}`;
+}
+
+// "1960-08-18" or "1960-08-18T00:00:00" -> "8/18/1960". Date-only, unlike
+// formatFirstPitch above -- game_date has no wall-clock time worth
+// preserving.
+function formatGameDate(v) {
+  if (!v) return v;
+  const m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return v;
+  const [, year, month, day] = m;
+  return `${parseInt(month, 10)}/${parseInt(day, 10)}/${year}`;
 }
 
 // Reshapes the raw `/games/:pk/details` row for display: drops noisy
@@ -289,8 +315,8 @@ function GamesView({ onSelectGame, onSelectTeam }) {
                   <option value="">All opponents</option>
                   {teams.data
                     ?.filter((t) => String(t.team_id) !== String(teamId))
-                    .sort((a, b) => a.team_abbreviation.localeCompare(b.team_abbreviation))
-                    .map((t) => <option key={t.team_id} value={t.team_id}>{t.team_abbreviation} — {t.team_name}</option>)}
+                    .sort((a, b) => a.abbreviation.localeCompare(b.abbreviation))
+                    .map((t) => <option key={t.team_id} value={t.team_id}>{t.abbreviation} — {t.team_name}</option>)}
                 </select>
               </div>
             )}
@@ -337,7 +363,7 @@ const BATTER_FIELDER_COLUMNS = [
 
 const PITCHER_COLUMNS = [
   { key: "player_name", label: "Player" },
-  { key: "pitching_innings_pitched", label: "IP", innings: true },
+  { key: "innings_pitched", label: "IP", innings: true },
   { key: "pitching_hits_allowed", label: "H", sum: true },
   { key: "pitching_runs_allowed", label: "R", sum: true },
   { key: "pitching_earned_runs", label: "ER", sum: true },
@@ -401,12 +427,12 @@ function StatsTable({ title, rows, columns, onRowClick }) {
   );
 }
 
-// Appends an Actions column (YTD / Awards / Draft buttons) onto a base
-// column set. `role` is "batter" or "pitcher" — passed straight through
-// to the YTD endpoint so the backend knows which dw view to query,
-// reusing the same classification GAME_PLAYERS_STATS already computed
-// (player_role) rather than re-deriving it from scratch.
-function withActions(baseColumns, role, onAction) {
+// Appends an Actions column (YTD / Awards / Draft, optionally Transactions)
+// onto a base column set. `role` is "batter" or "pitcher" — passed straight
+// through to the YTD endpoint so the backend knows which dw view to query.
+// includeTransactions is opt-in so existing callers (GamePlayersStats) keep
+// their original 3-button layout unchanged.
+function withActions(baseColumns, role, onAction, includeTransactions = false) {
   return [
     ...baseColumns,
     {
@@ -417,6 +443,9 @@ function withActions(baseColumns, role, onAction) {
           <button className="mini-btn" onClick={(e) => { e.stopPropagation(); onAction("ytd", r, role); }}>YTD</button>
           <button className="mini-btn" onClick={(e) => { e.stopPropagation(); onAction("awards", r, role); }}>Awards</button>
           <button className="mini-btn" onClick={(e) => { e.stopPropagation(); onAction("draft", r, role); }}>Draft</button>
+          {includeTransactions && (
+            <button className="mini-btn" onClick={(e) => { e.stopPropagation(); onAction("transactions", r, role); }}>Transactions</button>
+          )}
         </div>
       ),
     },
@@ -469,8 +498,85 @@ function GamePlayersStats({ gamePk }) {
   );
 }
 
+/* ── Team Records / Splits panel ─────────────────────────────────────── */
+function fmtRecord(w, l) {
+  if (w == null && l == null) return '—';
+  const total = (w ?? 0) + (l ?? 0);
+  const pct = total > 0 ? ((w ?? 0) / total).toFixed(3).replace(/^0/, '') : '.000';
+  return { wl: `${w ?? 0}–${l ?? 0}`, pct };
+}
+
+function RecordSplit({ label, wins, losses, highlight }) {
+  const r = fmtRecord(wins, losses);
+  if (typeof r === 'string') return null;
+  return (
+    <div className="records-split">
+      <span className="records-split-label">{label}</span>
+      <span className="records-split-value" style={highlight ? { color: 'var(--gold)' } : undefined}>
+        {r.wl}<span className="pct">{r.pct}</span>
+      </span>
+    </div>
+  );
+}
+
+function TeamRecordBlock({ row }) {
+  const dh = row.double_header;
+  const dn = row.day_night;
+  const hour = row.start_hour != null ? `${row.start_hour}:xx` : null;
+
+  return (
+    <div className={`records-team-block ${row.is_home ? 'home' : 'away'}`}>
+      <div className="records-matchup-header">
+        <span className={`records-team-name ${row.is_home ? 'home' : 'away'}`}>
+          {row.team_name}
+        </span>
+        <span className="records-vs">{row.is_home ? 'vs' : '@'} {row.opponent_team_name}</span>
+      </div>
+      <div className="records-grid">
+        <RecordSplit label="vs Opponent"  wins={row.wins_to_date_opponent}  losses={row.losses_to_date_opponent}  highlight />
+        <RecordSplit label="At This Venue" wins={row.wins_to_date_venue}     losses={row.losses_to_date_venue} />
+        <RecordSplit label={`Day/Night — ${dn ?? '?'}`}
+          wins={dn === 'N' ? row.wins_to_date_day_night_night : row.wins_to_date_day_night_day}
+          losses={dn === 'N' ? row.losses_to_date_day_night_night : row.losses_to_date_day_night_day} />
+        {hour && <RecordSplit label={`Start ${hour}`} wins={row.wins_to_date_start_hour} losses={row.losses_to_date_start_hour} />}
+        {dh === 'Y' && <RecordSplit label="Doubleheader (Y)" wins={row.wins_to_date_doubleheader_y} losses={row.losses_to_date_doubleheader_y} />}
+        {dh === 'S' && <RecordSplit label="Doubleheader (S)" wins={row.wins_to_date_doubleheader_s} losses={row.losses_to_date_doubleheader_s} />}
+        {dh === 'N' && <RecordSplit label="Single game"      wins={row.wins_to_date_doubleheader_n} losses={row.losses_to_date_doubleheader_n} />}
+        {row.is_interleague === 1 && (
+          <RecordSplit label="Interleague" wins={row.wins_to_date_interleague} losses={row.losses_to_date_interleague} />
+        )}
+        <RecordSplit label="This Series"      wins={row.wins_to_date_series}            losses={row.losses_to_date_series} />
+        <RecordSplit label={`Series Gm ${row.series_game_number ?? '?'}`}
+          wins={row.wins_to_date_series_game_number} losses={row.losses_to_date_series_game_number} />
+        {row.games_in_series != null && (
+          <RecordSplit label={`${row.games_in_series}-Gm Series`}
+            wins={row.wins_to_date_games_in_series} losses={row.losses_to_date_games_in_series} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function GameTeamRecords({ gamePk }) {
+  const { data, loading, error } = useApi(`/games/${gamePk}/team-records`);
+  if (loading) return <div className="panel records-panel"><Loading /></div>;
+  if (error)   return <div className="panel records-panel"><ErrorBox message={error} /></div>;
+  if (!data || data.length === 0) return null;
+
+  return (
+    <div className="panel records-panel">
+      <p className="panel-title">Season Records &amp; Splits (entering this game)</p>
+      <div className="records-teams-row">
+        {data.map((row, i) => <TeamRecordBlock key={i} row={row} />)}
+      </div>
+    </div>
+  );
+}
+
+/* ── Game detail view ─────────────────────────────────────────────────── */
 function GameDetailView({ gamePk, onBack, onSelectPlayer }) {
   const details = useApi(`/games/${gamePk}/details`);
+  const matchup = useApi(`/games/${gamePk}/matchup`);
   const umpires = useApi(`/games/${gamePk}/umpires`);
   const performance = useApi(`/games/${gamePk}/umpire-performance`);
 
@@ -494,7 +600,16 @@ function GameDetailView({ gamePk, onBack, onSelectPlayer }) {
   return (
     <div>
       <BackLink onClick={onBack} label="Back to games" />
-      <h2 className="section-title">Game {gamePk}</h2>
+      <h2 className="section-title">
+        {matchup.data && matchup.data.away_team_name && matchup.data.home_team_name
+          ? <>{matchup.data.away_team_name} <span className="at">@</span> {matchup.data.home_team_name}</>
+          : `Game ${gamePk}`}
+      </h2>
+      {matchup.data && matchup.data.game_date && (
+        <p className="game-subtitle">{formatGameDate(matchup.data.game_date)}</p>
+      )}
+
+      <GameTeamRecords gamePk={gamePk} />
 
       <div className="game-detail-grid">
         <div className="panel">
@@ -518,7 +633,7 @@ function GameDetailView({ gamePk, onBack, onSelectPlayer }) {
           <div className="panel">
             <p className="panel-title">Umpire performance</p>
             {performance.loading ? <Loading /> : performance.error ? <ErrorBox message={performance.error} /> :
-              <DataTable rows={performance.data} columns={performanceColumns} compact />}
+              <DataTable rows={performance.data} columns={performanceColumns} wrap />}
           </div>
         </div>
       </div>
@@ -531,14 +646,63 @@ function GameDetailView({ gamePk, onBack, onSelectPlayer }) {
 // ---------------------------------------------------------------------
 
 function PlayersView({ activeGamePk, onSelectPlayer }) {
-  const gamePlayers = useApi(activeGamePk ? `/games/${activeGamePk}/players` : null, !!activeGamePk);
-  const gameVenue = useApi(activeGamePk ? `/games/${activeGamePk}/venue` : null, !!activeGamePk);
-  const allPlayers = useApi(activeGamePk ? null : "/players", !activeGamePk);
+  // Team: "" = default list (this game's players, or all players when no
+  // game is selected); otherwise a team_id whose roster is fetched for the
+  // active game's season (or the team's latest season with no game).
+  // Position: "" = all; filtered client-side from whatever list is shown.
+  const [teamId, setTeamId] = useState("");
+  const [position, setPosition] = useState("");
 
-  const columns = [
+  // Picking a different game resets both filters back to that game.
+  useEffect(() => { setTeamId(""); setPosition(""); }, [activeGamePk]);
+
+  const teams = useApi("/teams");
+  const gameVenue = useApi(activeGamePk ? `/games/${activeGamePk}/venue` : null, !!activeGamePk);
+
+  const listPath = teamId
+    ? `/teams/${teamId}/players${activeGamePk ? `?game_pk=${activeGamePk}` : ""}`
+    : activeGamePk ? `/games/${activeGamePk}/players` : "/players";
+  const list = useApi(listPath);
+
+  const [modal, setModal] = useState(null); // {type, id, name, role}
+
+  // /players (ALL_PLAYERS) and the bio lists use different column names.
+  const posOf = (r) => r.position ?? r.position__name ?? "";
+  const idOf = (r) => r.id ?? r.player_id;
+
+  const rows = list.data || [];
+  const positions = [...new Set(rows.map(posOf).filter(Boolean))].sort();
+  const shown = position ? rows.filter((r) => posOf(r) === position) : rows;
+  const isBioList = !!teamId || !!activeGamePk;
+
+  const allPlayersColumns = [
     { key: "full_name", label: "Name" },
-    { key: "primary_position", label: "Position" },
+    { key: "position__name", label: "Position" },
   ];
+
+  // GAME_PLAYER_DETAIL / TEAM_PLAYERS columns -- 'id' is the player key
+  // (matches dw.mlbplayers, not 'player_id'), 'height/weight' is accessed
+  // via bracket notation since the SQL alias contains a slash.
+  const bioColumns = [
+    { key: "full_name", label: "Name" },
+    { key: "team_name", label: "Team" },
+    { key: "position", label: "Position" },
+    { key: "current_age", label: "Age" },
+    { key: "height/weight", label: "Ht/Wt" },
+    { key: "Bats/Throws", label: "Bats/Throws" },
+    { key: "debut", label: "MLB Debut" },
+    { key: "birth_place", label: "Birthplace" },
+  ];
+
+  const openModal = (type, r) => {
+    const role = posOf(r) === "Pitcher" ? "pitcher" : "batter";
+    setModal({ type, id: idOf(r), name: r.full_name, role });
+  };
+
+  const teamName = (teams.data || []).find((t) => String(t.team_id) === String(teamId))?.team_name;
+  const listTitle = teamId
+    ? `${teamName || "Team"} players${activeGamePk ? ` (season of game ${activeGamePk})` : " (latest season)"}`
+    : activeGamePk ? `Players in game ${activeGamePk}` : "All players";
 
   return (
     <div>
@@ -551,15 +715,63 @@ function PlayersView({ activeGamePk, onSelectPlayer }) {
         </div>
       )}
 
+      <div className="controls-row">
+        <div className="field">
+          <label htmlFor="playersTeam">Team</label>
+          <select id="playersTeam" value={teamId}
+            onChange={(e) => setTeamId(e.target.value)}>
+            <option value="">{activeGamePk ? `This game (${activeGamePk})` : "All players"}</option>
+            {(teams.data || []).map((t) => (
+              <option key={t.team_id} value={t.team_id}>{t.team_name}</option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <label htmlFor="playersPosition">Position</label>
+          <select id="playersPosition" value={position}
+            onChange={(e) => setPosition(e.target.value)}>
+            <option value="">All positions</option>
+            {/* keep a selected position listed even if this list has none */}
+            {[...new Set([...positions, position].filter(Boolean))].sort().map((pos) => (
+              <option key={pos} value={pos}>{pos}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
       <div className="panel">
-        <p className="panel-title">{activeGamePk ? `Players in game ${activeGamePk}` : "All players"}</p>
+        <p className="panel-title">
+          {listTitle}{list.data ? ` \u00b7 ${shown.length} player${shown.length === 1 ? "" : "s"}` : ""}
+        </p>
         {(() => {
-          const src = activeGamePk ? gamePlayers : allPlayers;
-          if (src.loading) return <Loading />;
-          if (src.error) return <ErrorBox message={src.error} />;
-          return <DataTable rows={src.data} columns={columns} onRowClick={(p) => onSelectPlayer(p.player_id)} />;
+          if (list.loading) return <Loading />;
+          if (list.error) return <ErrorBox message={list.error} />;
+          if (!shown.length) {
+            return <EmptyState label={position ? `No ${position.toLowerCase()}s in this list.` : "No players found."} />;
+          }
+          if (!isBioList) {
+            return <DataTable rows={shown} columns={allPlayersColumns} onRowClick={(p) => onSelectPlayer(idOf(p))} />;
+          }
+          return (
+            <DataTable rows={shown}
+              columns={activeGamePk ? withActions(bioColumns, null, openModal, true) : bioColumns}
+              onRowClick={(p) => onSelectPlayer(idOf(p))} />
+          );
         })()}
       </div>
+
+      {activeGamePk && modal?.type === "ytd" && (
+        <PlayerYtdModal playerId={modal.id} playerName={modal.name} gamePk={activeGamePk} role={modal.role} onClose={() => setModal(null)} />
+      )}
+      {activeGamePk && modal?.type === "awards" && (
+        <PlayerAwardsModal playerId={modal.id} playerName={modal.name} onClose={() => setModal(null)} />
+      )}
+      {activeGamePk && modal?.type === "draft" && (
+        <PlayerDraftModal playerId={modal.id} playerName={modal.name} onClose={() => setModal(null)} />
+      )}
+      {activeGamePk && modal?.type === "transactions" && (
+        <PlayerTransactionsModal playerId={modal.id} playerName={modal.name} onClose={() => setModal(null)} />
+      )}
     </div>
   );
 }

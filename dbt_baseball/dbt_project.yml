@@ -15,6 +15,9 @@ clean-targets:
   - "target"
   - "dbt_packages"
 
+flags:
+  dbt_sqlserver_use_native_string_types: False
+  dbt_sqlserver_use_dbt_transactions: False
 models:
   baseball_dw:
     # Stage

@@ -284,6 +284,21 @@ BEGIN
     -- seed one row so there is always exactly one config record
     INSERT INTO dbo.alert_config (webhook_url, enabled) VALUES (NULL, 0)
 END
+
+-- ── retired_models: models no longer in use, hidden from every ETLMonitor view ──
+-- Add a row to retire a model; delete the row to bring it back. History in
+-- dbo.pipeline and the other source tables is left untouched.
+IF NOT EXISTS (
+    SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+    WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='retired_models'
+)
+BEGIN
+    CREATE TABLE dbo.retired_models (
+        model_name  NVARCHAR(200) NOT NULL PRIMARY KEY,
+        retired_at  DATETIME2 DEFAULT SYSUTCDATETIME(),
+        reason      NVARCHAR(400) NULL
+    )
+END
 """
 
 with app.app_context():
@@ -313,6 +328,7 @@ def seed_ranges_from_history():
         FROM dbo.pipeline
         WHERE created_at >= DATEADD(day, -30, SYSUTCDATETIME())
           AND status = 'success'
+          AND model_name NOT IN (SELECT model_name FROM dbo.retired_models)
         GROUP BY model_name
     ) AS src ON tgt.model_name = src.model_name
     WHEN NOT MATCHED THEN
@@ -425,6 +441,7 @@ def pipeline_status_summary():
     INNER JOIN (
         SELECT model_name, MAX(id) AS max_id
         FROM dbo.pipeline
+        WHERE model_name NOT IN (SELECT model_name FROM dbo.retired_models)
         GROUP BY model_name
     ) latest ON p.model_name = latest.model_name AND p.id = latest.max_id
     ORDER BY p.model_layer, p.model_name
@@ -486,6 +503,7 @@ def failure_rates(days=7):
         MAX(CASE WHEN status NOT IN ('fail','failed','failure','error') THEN start_time END) AS last_ran
     FROM dbo.pipeline
     WHERE start_time >= DATEADD(day, -{days}, SYSUTCDATETIME())
+      AND model_name NOT IN (SELECT model_name FROM dbo.retired_models)
     GROUP BY model_name
     ORDER BY failure_rate_pct DESC
     """
@@ -508,6 +526,7 @@ def pipeline_history_last_run():
     INNER JOIN (
         SELECT model_name, MAX(id) AS max_id
         FROM dbo.pipeline
+        WHERE model_name NOT IN (SELECT model_name FROM dbo.retired_models)
         GROUP BY model_name
     ) latest ON p.model_name = latest.model_name AND p.id = latest.max_id
     ORDER BY p.model_layer, p.model_name
@@ -566,6 +585,7 @@ def dbt_model_executions(invocation_id=None, limit=200):
                 me.query_completed_at, me.command_invocation_id
             FROM silver.model_executions me
             WHERE me.command_invocation_id = ?
+              AND me.name NOT IN (SELECT model_name FROM dbo.retired_models)
             ORDER BY me.total_node_runtime DESC
             """
             rows = query(sql, [invocation_id])
@@ -591,6 +611,7 @@ def dbt_model_executions(invocation_id=None, limit=200):
                 FROM silver.model_executions me
             ) me
             WHERE me.rn = 1
+              AND me.name NOT IN (SELECT model_name FROM dbo.retired_models)
             ORDER BY me.name
             """
             rows = query(sql)
@@ -622,6 +643,7 @@ def lineage_summary():
         SUM(CASE WHEN transformation_type = 'Derived Expression' THEN 1 ELSE 0 END) AS derived,
         MAX(refreshed_at) AS last_refreshed
     FROM dbo.model_lineage
+    WHERE model NOT IN (SELECT model_name FROM dbo.retired_models)
     GROUP BY model, layer
     ORDER BY
         CASE layer
@@ -668,7 +690,11 @@ def lineage_with_tests(model_name):
 
 
 def get_pipeline_ranges():
-    return query("SELECT * FROM dbo.pipeline_ranges ORDER BY model_name")
+    return query(
+        "SELECT * FROM dbo.pipeline_ranges "
+        "WHERE model_name NOT IN (SELECT model_name FROM dbo.retired_models) "
+        "ORDER BY model_name"
+    )
 
 
 def range_audit_log(limit=300):
@@ -739,6 +765,7 @@ def transformation_audit_latest(limit=100):
         FROM dbo.transformation_audit_log
     ) x
     WHERE rn = 1
+      AND model_name NOT IN (SELECT model_name FROM dbo.retired_models)
     ORDER BY model_name
     """
     rows = query(sql)

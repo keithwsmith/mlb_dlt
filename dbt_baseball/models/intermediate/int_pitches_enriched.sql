@@ -1,8 +1,9 @@
 {{
     config(
-        materialized='incremental',
+       
+		materialized='view',
         unique_key='event_id',
-        on_schema_change='sync_all_columns'
+        on_schema_change='append_new_columns'
     )
 }}
 
@@ -60,8 +61,7 @@ with pitches as (
         pitcher_id,
         pitcher_name,
         pitcher_hand,
-
-        pitch_type_code                         as pitch_type_code,
+		cast(pitch_type_code as nvarchar(200)) as pitch_type_code,
         pitch_type_description                  as pitch_type_description,
         pitch_trail_color                        as pitch_trail_color,
 
@@ -109,6 +109,14 @@ with pitches as (
 
         has_review                         as has_review,
 
+        -- plate-appearance result (same value on every pitch of the at-bat)
+        result_event_type,
+        result_event,
+        result_description,
+        result_rbi,
+        cast(result_is_hit as int)         as result_is_hit,
+        cast(is_final_pitch as int)        as is_final_pitch,
+
         -- FIX: single source of truth for "do we have enough location data
         -- to classify this pitch relative to the zone at all?"
         case
@@ -120,16 +128,6 @@ with pitches as (
         end as has_location
 
     from {{ ref('stg_play_events') }}
-
-    {% if is_incremental() %}
-
-        where load_id >
-            (
-                select max(load_id)
-                from {{ this }}
-            )
-
-    {% endif %}
 
 ),
 
@@ -251,7 +249,24 @@ enriched as (
             when p.strikes > p.balls then 'Ahead'
             when p.balls > p.strikes then 'Behind'
             else 'Even'
-        end as count_leverage
+        end as count_leverage,
+
+        -- ── plate-appearance outcome flags ────────────────────────────
+        -- Set ONLY on the final pitch of a completed plate appearance (0 on
+        -- every other pitch), so marts can simply SUM them. A play that ends
+        -- on a runner event (caught stealing, pickoff, ...) is not a
+        -- completed plate appearance: the batter comes back up later.
+        case
+            when p.is_final_pitch = 1
+             and p.result_event_type is not null
+             and p.result_event_type not like 'caught_stealing%'
+             and p.result_event_type not like 'pickoff%'
+             and p.result_event_type not like 'stolen_base%'
+             and p.result_event_type not in ('wild_pitch', 'passed_ball', 'balk',
+                                             'other_advance', 'runner_double_play',
+                                             'defensive_indiff')
+            then 1 else 0
+        end as pa_is_complete
 
     from pitches p
     left join zones z
@@ -259,5 +274,39 @@ enriched as (
 
 )
 
-select *
-from enriched
+select
+    e.*,
+
+    -- outcome flags for completed plate appearances (0 on all other pitches)
+    case when e.pa_is_complete = 1 and e.result_is_hit = 1 then 1 else 0 end
+        as pa_is_hit,
+    case when e.pa_is_complete = 1 and e.result_event_type = 'home_run' then 1 else 0 end
+        as pa_is_home_run,
+    case when e.pa_is_complete = 1 and e.result_event_type in ('strikeout', 'strikeout_double_play', 'strikeout_triple_play')
+        then 1 else 0 end
+        as pa_is_strikeout,
+    case when e.pa_is_complete = 1 and e.result_event_type in ('walk', 'intent_walk') then 1 else 0 end
+        as pa_is_walk,
+    case when e.pa_is_complete = 1 and e.result_event_type = 'hit_by_pitch' then 1 else 0 end
+        as pa_is_hit_by_pitch,
+    -- official at-bat: every completed PA except walks, HBP, sacrifices and interference
+    case when e.pa_is_complete = 1
+          and e.result_event_type not in ('walk', 'intent_walk', 'hit_by_pitch',
+                                          'sac_fly', 'sac_bunt', 'sac_fly_double_play',
+                                          'sac_bunt_double_play', 'catcher_interf')
+        then 1 else 0 end
+        as pa_is_at_bat,
+    case when e.pa_is_complete = 1 then
+        case e.result_event_type
+            when 'single'   then 1
+            when 'double'   then 2
+            when 'triple'   then 3
+            when 'home_run' then 4
+            else 0
+        end
+    else 0 end
+        as pa_total_bases,
+    case when e.pa_is_complete = 1 then coalesce(e.result_rbi, 0) else 0 end
+        as pa_rbi
+
+from enriched e

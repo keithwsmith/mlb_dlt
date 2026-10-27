@@ -19,21 +19,29 @@
 --      int_team_game_results.sql, even though no stat column depends on it.
 --
 -- INCREMENTAL STRATEGY:
---   Unlike int_team_game_results.sql, this model has no running counter
---   (like series_id) that needs prior-batch state to compute correctly --
---   every row here is self-contained (one player's stat line for one
---   game), so there's no equivalent of that model's prior_series CTE
---   needed. The only reason to scan a reduced window on incremental runs
---   at all is to pick up late scorer corrections to recently-played
---   games (box scores are occasionally amended a day or two after a
---   game is marked Final) -- LOOKBACK_DAYS below controls how far back
---   that re-scan goes. 3 days is a starting guess for how long box-score
---   corrections realistically trickle in; widen it if you find corrected
---   stats aren't being picked up in practice.
+--   Incremental runs pick up raw rows by LOAD, not by date: only rows in
+--   dw.player_game_stats whose _dlt_load_id is newer than the newest
+--   load_id already in this model are processed. This is the same pattern
+--   dim_game_details uses, and it matches how mlb_load.py delivers data:
+--     - new games            -> arrive in a new load -> picked up
+--     - late-arriving games  -> arrive in a new load -> picked up, however
+--                               old the game date is
+--     - manually reloaded    -> dlt's merge gives the rewritten rows a new
+--       games                   _dlt_load_id -> picked up and overwritten
+--   (The old approach -- re-scanning the last 3 days of game dates --
+--   missed both late-arriving and reloaded games, and its purpose, catching
+--   late box-score corrections, never applied: the loader fetches each
+--   game only once.)
 --
 --   incremental_strategy='merge' on unique_key=(game_pk, player_id) means
---   a re-scanned game's rows simply overwrite what's already there --
---   safe to run with a generous lookback with no risk of duplicating rows.
+--   a re-processed game's rows simply overwrite what's already there, with
+--   no risk of duplicating rows.
+--
+--   Requirement: dim_games must be current before this model runs (dbt
+--   runs it first automatically, since it's ref()'d). A raw row whose game
+--   isn't a final regular-season game in dim_games at that moment is
+--   dropped by the inner join and not retried by later incremental runs --
+--   run with --full-refresh if that ever happens.
 
 {{
     config(
@@ -78,8 +86,15 @@ with player_stats as (
         batting_stolen_bases,
         batting_left_on_base,
         batting_avg   as batting_avg_raw,    -- per-game rate, not summed -- see dim_player_stats_by_date
-        pitching_era  as pitching_era_raw    -- per-game rate, not summed -- see dim_player_stats_by_date
+        pitching_era  as pitching_era_raw,   -- per-game rate, not summed -- see dim_player_stats_by_date
+        _dlt_load_id  as load_id
     from {{ source('dw', 'player_game_stats') }}
+
+    {% if is_incremental() %}
+    -- Only rows from loads newer than anything already processed -- see
+    -- INCREMENTAL STRATEGY above.
+    where _dlt_load_id > (select max(load_id) from {{ this }})
+    {% endif %}
 
 ),
 
@@ -100,17 +115,6 @@ games as (
     from {{ ref('dim_games') }}
     where game_type = 'R'     -- regular season, matching int_team_game_results.sql
       and is_final = 1
-      {% if is_incremental() %}
-      -- Reduced re-scan window on incremental runs -- see INCREMENTAL
-      -- STRATEGY note above. Every column here is self-contained per
-      -- row, so (unlike int_team_game_results.sql's series_id) there's
-      -- no correctness requirement forcing a wider lookback -- this is
-      -- purely about catching late box-score corrections.
-      and game_date >= (
-          select dateadd(day, -3, max(game_date)) from {{ this }}
-      )
-      {% endif %}
-
 ),
 
 game_details as (
@@ -153,13 +157,6 @@ innings_parsed as (
                 end
         end as pitching_outs_recorded
     from player_stats ps
-
-    -- On incremental runs, only bother parsing stat rows for games that
-    -- actually fell inside this batch's reduced window -- avoids parsing
-    -- the whole raw source table every run.
-    {% if is_incremental() %}
-    where ps.game_pk in (select game_pk from games)
-    {% endif %}
 
 )
 
@@ -221,7 +218,10 @@ select
             try_convert(time, gd.first_pitch__v_text),
             cast(gd.first_pitch as time)
         )
-    ) as start_hour
+    ) as start_hour,
+
+    -- Audit: the raw load this row came from (drives incremental runs)
+    ip.load_id
 
 from innings_parsed ip
 inner join games g

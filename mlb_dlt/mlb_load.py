@@ -1,4 +1,5 @@
 import dlt
+import json
 import requests
 import pyodbc
 from datetime import datetime, timedelta
@@ -438,6 +439,10 @@ def draft_resource():
 # ----------------------------
 # Play-by-play fetch helper
 # ----------------------------
+# Plate-appearance results (play.result.eventType) that count as hits.
+HIT_EVENT_TYPES = {"single", "double", "triple", "home_run"}
+
+
 def fetch_game_pbp(year, game_pk):
     try:
         pbp = get_json(f"{BASE_URL}/game/{game_pk}/playByPlay")
@@ -446,17 +451,37 @@ def fetch_game_pbp(year, game_pk):
         for play in pbp.get("allPlays", []):
             at_bat_index = play.get("atBatIndex")
             matchup = play.get("matchup", {})
+            result = play.get("result", {}) or {}
+            # Outcome of the whole plate appearance, e.g. "single", "home_run",
+            # "strikeout", "walk", "field_out". Previously read but never saved.
+            result_event_type = result.get("eventType")
             batter = matchup.get("batter", {})
             pitcher = matchup.get("pitcher", {})
             batter_hand = matchup.get("batSide", {})
             pitcher_hand = matchup.get("pitchHand", {})
 
-            for event in play.get("playEvents", []):
+            # Index of the last pitch in this plate appearance; that pitch is
+            # the one the result belongs to.
+            pitch_indexes = [
+                i for i, e in enumerate(play.get("playEvents", [])) if e.get("isPitch")
+            ]
+            last_pitch_index = pitch_indexes[-1] if pitch_indexes else None
+
+            for i, event in enumerate(play.get("playEvents", [])):
                 if not event.get("isPitch"):
                     continue
 
                 details = event.get("details", {})
                 is_in_play = details.get("isInPlay", False)
+
+                # Plate-appearance result, stored on every pitch of the at-bat.
+                # is_final_pitch marks the pitch that produced it.
+                event["result_event_type"] = result_event_type
+                event["result_event"] = result.get("event")              # e.g. "Single", "Home Run"
+                event["result_description"] = result.get("description")  # e.g. "Aaron Judge singles on a line drive..."
+                event["result_rbi"] = result.get("rbi")
+                event["result_is_hit"] = result_event_type in HIT_EVENT_TYPES
+                event["is_final_pitch"] = i == last_pitch_index
 
                 event["season"] = year
                 event["gamePk"] = game_pk
@@ -480,21 +505,23 @@ def fetch_game_pbp(year, game_pk):
 # Players (40-man rosters)
 # ----------------------------
 # ----------------------------
-# Players (40-man rosters)
-# ----------------------------
 @dlt.resource(name="mlbplayers", write_disposition="replace")
 def players_resource():
     seen_ids = set()
-    for year in range(1960, 2026):
-        play = get_json(
+    current_year = datetime.now().year
+    for year in range(1960, current_year + 1):
+        roster = get_json(
             f"{BASE_URL}/sports/1/players",
             {"season": year}
         )
-        for player in play.get("people", []):
+        for player in roster.get("people", []):
             playid = player.get("id")
+            if playid in seen_ids:
+                continue
             this_player = get_json(f"{BASE_URL}/people/{playid}")
-            for play in this_player.get("people", []):
-                yield play
+            for person in this_player.get("people", []):
+                seen_ids.add(playid)
+                yield person
 
 
 # ----------------------------
@@ -514,7 +541,7 @@ def award_recipients_resource():
         if not award_id or award_id.upper().startswith("RETIRE"):
             continue
 
-        for year in range(2023, 2024):
+        for year in range(2023, 2027):
             try:
                 data = get_json(
                     f"{BASE_URL}/awards/{award_id}/recipients",
@@ -551,18 +578,16 @@ def award_recipients_resource():
 # ----------------------------
 # Rosters
 # ----------------------------
-@dlt.resource(name="rosters", write_disposition="append", primary_key=("person__id", "season", "status__code"))
+@dlt.resource(name="rosters", write_disposition="merge",
+              primary_key=("person__id", "season", "status__code", "parent_team_id"))
 def rosters_resource(start_year: int = None, end_year: int = None):
     current_year = datetime.now().year
-
     if start_year is None:
         start_year = current_year
     if end_year is None:
         end_year = current_year
-
     teams = get_json(f"{BASE_URL}/teams", {"sportId": 1})["teams"]
     print('teams found:' + str(len(teams)))
-
     for year in range(start_year, end_year + 1):
         for team in teams:
             roster = get_json(
@@ -573,6 +598,264 @@ def rosters_resource(start_year: int = None, end_year: int = None):
                 player["season"] = year
                 player["parent_team_id"] = team["id"]
                 yield player
+
+# ----------------------------
+# Coaches (MLB + minor leagues)
+# ----------------------------
+# Sport IDs used by the Stats API. 15 (Short-Season A) only returns teams for
+# seasons before the 2021 minor league reorganization; for later seasons it
+# simply comes back empty, so it's safe to leave in the list.
+COACH_SPORT_IDS = {
+    1: "MLB",
+    11: "AAA",
+    12: "AA",
+    13: "High-A",
+    14: "Single-A",
+    16: "Rookie",
+}
+
+
+def get_teams_for_sport(sport_id: int, season: int) -> list:
+    """All teams for one level and season. Returns [] on failure."""
+    try:
+        data = get_json(f"{BASE_URL}/teams", {"sportId": sport_id, "season": season})
+    except Exception as e:
+        print(f"[teams] fetch failed for sportId {sport_id}, season {season}: {e}")
+        return []
+    return data.get("teams", [])
+
+
+@dlt.resource(name="milb_teams", write_disposition="merge", primary_key=["id", "season"])
+def milb_teams_resource(start_year: int = None, end_year: int = None):
+    """
+    Minor league teams, one row per team per season (same shape as the
+    `teams` resource). Kept in its own table so dw.teams -- and everything
+    built on it (dim_teams, fact_games) -- stays MLB-only. Each row carries
+    parentOrgId (flattened by dlt to parent_org_id), the MLB parent club.
+    """
+    current_year = datetime.now().year
+    start_year = start_year or current_year
+    end_year = end_year or current_year
+
+    for year in range(start_year, end_year + 1):
+        for sport_id in COACH_SPORT_IDS:
+            if sport_id == 1:
+                continue  # MLB teams are loaded by teams_resource
+            seen_ids = set()
+            for team in get_teams_for_sport(sport_id, year):
+                team_id = team.get("id")
+                if team_id and team_id not in seen_ids:
+                    seen_ids.add(team_id)
+                    yield team
+
+
+def fetch_team_coaches(team: dict, sport_id: int, season: int) -> list:
+    """One flat row per coach/job for a single team-season."""
+    data = get_json(f"{BASE_URL}/teams/{team['id']}/coaches", {"season": season})
+    rows = []
+    for coach in data.get("roster", []):
+        person = coach.get("person", {}) or {}
+        rows.append({
+            "season": season,
+            "sport_id": sport_id,
+            "level": COACH_SPORT_IDS.get(sport_id),
+            "team_id": team.get("id"),
+            "team_name": team.get("name"),
+            "parent_org_id": team.get("parentOrgId") if sport_id != 1 else team.get("id"),
+            "person_id": person.get("id"),
+            "full_name": person.get("fullName"),
+            "job_id": coach.get("jobId"),
+            "job": coach.get("job"),
+            "title": coach.get("title"),
+            "jersey_number": coach.get("jerseyNumber"),
+        })
+    return rows
+
+
+@dlt.resource(name="team_coaches", write_disposition="merge",
+              primary_key=["team_id", "season", "person_id", "job_id"])
+def coaches_resource(start_year: int = None, end_year: int = None):
+    """
+    Coaching staffs for MLB and every minor league level, one row per
+    team / season / coach / job. Defaults to the current season; pass
+    --start-year / --end-year for a historical backfill. Coverage gets
+    thinner for older seasons, especially in the minors.
+    """
+    current_year = datetime.now().year
+    start_year = start_year or current_year
+    end_year = end_year or current_year
+
+    for year in range(start_year, end_year + 1):
+        # Build the list of (team, sport_id) to fetch for this season
+        team_jobs = []
+        for sport_id in COACH_SPORT_IDS:
+            for team in get_teams_for_sport(sport_id, year):
+                if team.get("id"):
+                    team_jobs.append((team, sport_id))
+        print(f"[coaches] {year}: fetching staffs for {len(team_jobs)} teams")
+
+        batch = []
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {
+                executor.submit(fetch_team_coaches, team, sport_id, year): (team.get("id"), sport_id)
+                for team, sport_id in team_jobs
+            }
+            for future in as_completed(futures):
+                team_id, sport_id = futures[future]
+                try:
+                    rows = future.result()
+                except Exception as e:
+                    print(f"[coaches] fetch failed for team {team_id} (sportId {sport_id}), {year}: {e}")
+                    continue
+                # Skip rows the merge can't key on
+                batch.extend(r for r in rows if r["person_id"] is not None and r["job_id"] is not None)
+
+        print(f"[coaches] {year}: {len(batch)} coach rows")
+        if batch:
+            yield batch
+
+
+# ----------------------------
+# People details (coaches + anyone missing from mlbplayers)
+# ----------------------------
+# dw.mlbplayers only holds people who appeared in an MLB game (/sports/1/players),
+# so coaches who never reached the majors -- and every minor-league-only player --
+# have no birthplace, position or school data. /people?personIds=... works for ANY
+# person id (players, coaches, umpires), and hydrate=education adds high schools
+# and colleges. Coaches who never played professionally usually come back with
+# only a name and birth date; that's all the API has for them.
+#
+# Columns are declared explicitly so the table always has the same shape, even
+# when a batch happens to have no values for a field (dlt otherwise skips
+# all-NULL columns). Education is stored as raw JSON and exploded in SQL
+# (dw.player_education view in player_coach_graph.sql).
+PEOPLE_DETAIL_COLUMNS = {
+    "id": {"data_type": "bigint", "nullable": False},
+    "full_name": {"data_type": "text"},
+    "first_name": {"data_type": "text"},
+    "last_name": {"data_type": "text"},
+    "birth_date": {"data_type": "text"},
+    "birth_city": {"data_type": "text"},
+    "birth_state_province": {"data_type": "text"},
+    "birth_country": {"data_type": "text"},
+    "death_date": {"data_type": "text"},
+    "is_player": {"data_type": "bool"},
+    "active": {"data_type": "bool"},
+    "primary_position__code": {"data_type": "text"},
+    "primary_position__name": {"data_type": "text"},
+    "bat_side__code": {"data_type": "text"},
+    "pitch_hand__code": {"data_type": "text"},
+    "draft_year": {"data_type": "bigint"},
+    "mlb_debut_date": {"data_type": "text"},
+    "last_played_date": {"data_type": "text"},
+    "high_school_count": {"data_type": "bigint"},
+    "college_count": {"data_type": "bigint"},
+    "education_json": {"data_type": "text"},
+    "fetched_at": {"data_type": "text"},
+}
+
+PEOPLE_BATCH_SIZE = 50   # person ids per /people call
+
+
+def get_person_ids_needing_details(scope: str = "coaches", refresh: bool = False) -> list:
+    """
+    scope = "coaches" : every person in dw.team_coaches
+    scope = "all"     : coaches + every player in dw.player_transactions + dw.mlbplayers
+                        (gives schools for players too -- many more API calls)
+    Ids already in dw.people_details are skipped unless refresh=True.
+    """
+    id_sql = {
+        "coaches": "SELECT DISTINCT person_id AS id FROM dw.team_coaches",
+        "all": """
+            SELECT person_id AS id FROM dw.team_coaches
+            UNION SELECT player_id FROM dw.player_transactions WHERE player_id IS NOT NULL
+            UNION SELECT id FROM dw.mlbplayers WHERE id IS NOT NULL
+        """,
+    }[scope]
+
+    conn = pyodbc.connect(DW_CONNECTION_STRING, timeout=10)
+    cursor = conn.cursor()
+    cursor.execute(id_sql)
+    ids = {r[0] for r in cursor.fetchall() if r[0] is not None}
+
+    if not refresh:
+        try:
+            cursor.execute("SELECT id FROM dw.people_details")
+            loaded = {r[0] for r in cursor.fetchall()}
+            ids -= loaded
+        except pyodbc.Error:
+            # First run: dlt hasn't created dw.people_details yet.
+            pass
+    conn.close()
+    print(f"[people_details] {len(ids)} people to fetch (scope={scope}, refresh={refresh}).")
+    return sorted(ids)
+
+
+def fetch_people_batch(person_ids: list) -> list:
+    data = get_json(
+        f"{BASE_URL}people",
+        {"personIds": ",".join(str(i) for i in person_ids), "hydrate": "education"},
+    )
+    now = datetime.now().isoformat(timespec="seconds")
+    rows = []
+    for p in data.get("people", []):
+        edu = p.get("education") or {}
+        pos = p.get("primaryPosition") or {}
+        rows.append({
+            "id": p.get("id"),
+            "full_name": p.get("fullName"),
+            "first_name": p.get("firstName"),
+            "last_name": p.get("lastName"),
+            "birth_date": p.get("birthDate"),
+            "birth_city": p.get("birthCity"),
+            "birth_state_province": p.get("birthStateProvince"),
+            "birth_country": p.get("birthCountry"),
+            "death_date": p.get("deathDate"),
+            "is_player": p.get("isPlayer"),
+            "active": p.get("active"),
+            # The API uses position code "X" / "Unknown" for non-players
+            "primary_position__code": pos.get("code") if pos.get("code") != "X" else None,
+            "primary_position__name": pos.get("name") if pos.get("code") != "X" else None,
+            "bat_side__code": (p.get("batSide") or {}).get("code"),
+            "pitch_hand__code": (p.get("pitchHand") or {}).get("code"),
+            "draft_year": p.get("draftYear"),
+            "mlb_debut_date": p.get("mlbDebutDate"),
+            "last_played_date": p.get("lastPlayedDate"),
+            "high_school_count": len(edu.get("highschools") or []),
+            "college_count": len(edu.get("colleges") or []),
+            "education_json": json.dumps(edu) if edu else None,
+            "fetched_at": now,
+        })
+    return rows
+
+
+@dlt.resource(
+    name="people_details",
+    write_disposition="merge",
+    primary_key="id",
+    columns=PEOPLE_DETAIL_COLUMNS,
+)
+def people_details_resource(scope: str = "coaches", refresh: bool = False):
+    person_ids = get_person_ids_needing_details(scope, refresh)
+    if not person_ids:
+        print("[people_details] Nothing new to load.")
+        return
+
+    chunks = [person_ids[i:i + PEOPLE_BATCH_SIZE] for i in range(0, len(person_ids), PEOPLE_BATCH_SIZE)]
+    done = 0
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(fetch_people_batch, chunk): chunk[0] for chunk in chunks}
+        for future in as_completed(futures):
+            done += 1
+            try:
+                rows = future.result()
+            except Exception as e:
+                print(f"[people_details] batch starting at id {futures[future]} failed: {e}")
+                continue
+            if rows:
+                yield rows
+            if done % 50 == 0:
+                print(f"[people_details] {done}/{len(chunks)} batches")
 
 
 # ----------------------------
@@ -1233,7 +1516,12 @@ def stats_resource(start_year: int = None, end_year: int = None):
     write_disposition="merge",
     primary_key=("gamePk", "playId"),
 )
-def play_events_resource(start_year: int = None, end_year: int = None):
+def play_events_resource(start_year: int = None, end_year: int = None, reload: bool = False):
+    """
+    reload=True re-fetches games that are already in dw.play_events (merge
+    updates them in place). Use it with --start-year/--end-year to backfill
+    new fields such as result_event_type onto games loaded earlier.
+    """
     user_provided_range = start_year is not None or end_year is not None
     current_year = datetime.now().year
     max_date = get_max_game_date()
@@ -1296,10 +1584,13 @@ def play_events_resource(start_year: int = None, end_year: int = None):
     # backfills still go through this same filter; pass force_reload=True
     # below (or just query/delete the specific game_pks first) if you
     # ever need to deliberately reprocess an already-loaded game.
-    loaded_pks = get_loaded_pitch_game_pks()
-    before = len(all_games)
-    all_games = [(y, pk) for y, pk in all_games if pk not in loaded_pks]
-    print(f"{before} candidate games, {len(all_games)} not yet loaded and will be fetched...")
+    if reload:
+        print(f"--reload: re-fetching all {len(all_games)} games, including ones already loaded...")
+    else:
+        loaded_pks = get_loaded_pitch_game_pks()
+        before = len(all_games)
+        all_games = [(y, pk) for y, pk in all_games if pk not in loaded_pks]
+        print(f"{before} candidate games, {len(all_games)} not yet loaded and will be fetched...")
 
     if not all_games:
         print("Nothing new to load.")
@@ -1346,6 +1637,12 @@ if __name__ == "__main__":
     parser.add_argument("resource", help="Resource to run (e.g. play_events, games, seasons)")
     parser.add_argument("--start-year", type=int, default=None)
     parser.add_argument("--end-year", type=int, default=None)
+    parser.add_argument("--scope", choices=["coaches", "all"], default="coaches",
+                        help="people_details only: fetch coaches (default) or coaches + all players")
+    parser.add_argument("--refresh", action="store_true",
+                        help="people_details only: re-fetch people already loaded")
+    parser.add_argument("--reload", action="store_true",
+                        help="play_events only: re-fetch games already loaded (use with --start-year/--end-year)")
     args = parser.parse_args()
 
     pipeline = dlt.pipeline(
@@ -1355,7 +1652,7 @@ if __name__ == "__main__":
     )
 
     resources = {
-        "play_events": lambda: play_events_resource(args.start_year, args.end_year),
+        "play_events": lambda: play_events_resource(args.start_year, args.end_year, args.reload),
         "games": lambda: games_resource(args.start_year, args.end_year),
         "seasons": lambda: seasons_resource(args.start_year, args.end_year),
         "teams": lambda: teams_resource(args.start_year, args.end_year),
@@ -1364,6 +1661,9 @@ if __name__ == "__main__":
         "player_stats": lambda: stats_resource(args.start_year, args.end_year),
         "player_game_stats": lambda: player_game_stats_resource(args.start_year, args.end_year),
         "rosters": lambda: rosters_resource(args.start_year, args.end_year),
+        "milb_teams": lambda: milb_teams_resource(args.start_year, args.end_year),
+        "coaches": lambda: coaches_resource(args.start_year, args.end_year),
+        "people_details": lambda: people_details_resource(args.scope, args.refresh),
         "awards": award_recipients_resource,
         "player_transactions": lambda: transactions_resource(args.start_year, args.end_year),
         "player_season_transactions": player_season_transactions_resource,

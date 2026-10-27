@@ -1,0 +1,13 @@
+dbt run --select stg_net__people
+dbt run --select net_person_links_home_state --vars "{net_include_home_state_links: true}" --select stg_net__teams
+dbt run --select stg_net__schools
+dbt run --select int_net__player_stints
+dbt run --select int_net__trades
+dbt run --select int_net__roster_seasons
+dbt run --select int_net__coach_seasons
+dbt run --select net_people
+dbt run --select net_teams
+dbt run --select net_person_team_links
+dbt run --select net_person_school_links
+dbt run --select net_person_links
+dbt run --select net_person_links_home_state --vars "{net_include_home_state_links: true}"

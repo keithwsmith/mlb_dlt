@@ -3,10 +3,13 @@ version: 2
 sources:
   - name: dw
     schema: dw
-
-
+    tables:
+      - name: people_details
+      - name: team_coaches
+      - name: milb_teams
+ 
 models:
-
+  
   # ────────────────────────────────────────────────────────────────────────────
   # STG_PLAY_EVENTS
   # One row per pitch / play event within a game at-bat.

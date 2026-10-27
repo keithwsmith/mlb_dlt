@@ -16,11 +16,19 @@ CONNECTION_STRING = (
     "DRIVER={ODBC Driver 17 for SQL Server};"
     "SERVER=KEITH-PERSONAL;"
     "DATABASE=dlt;"
-    "username=sa;"
-    "password=pass0123;"
-    "Trusted_Connection=yes;"
-    "trust_server_certificate=true;"
+    "UID=sa;"
+    "PWD=pass0123;"
+    "TrustServerCertificate=yes;"
 )
+# CONNECTION_STRING = (
+    # "DRIVER={ODBC Driver 17 for SQL Server};"
+    # "SERVER=KEITH-PERSONAL;"
+    # "DATABASE=dlt;"
+    # "username=sa;"
+    # "password=pass0123;"
+    # "Trusted_Connection=yes;"
+    # "trust_server_certificate=true;"
+# )
 
 # pyodbc has no native support for SQL Server's DATETIMEOFFSET type (used by
 # columns like silver.dim_game_details.first_pitch). Without this converter,
@@ -56,10 +64,13 @@ def get_cursor():
 
 def run_query(sql: str, params: tuple = ()) -> list[dict]:
     """Run a SELECT and return rows as a list of dicts."""
+    print(f"[DB] Executing:\n{sql}\n[DB] Params: {params}")
     with get_cursor() as cursor:
         cursor.execute(sql, params)
         columns = [col[0] for col in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        print(f"[DB] -> {len(rows)} row(s)")
+        return rows
 
 
 def run_query_one(sql: str, params: tuple = ()) -> dict | None:

@@ -4,17 +4,20 @@ packages:
     version: 1.4.1
   - name: dbt_date
     package: godatadriven/dbt_date
-    version: 0.19.0
+    version: 0.21.0
   - name: dbt_expectations
     package: metaplane/dbt_expectations
     version: 0.10.10
   - name: dbt_artifacts
     package: brooklyn-data/dbt_artifacts
-    version: 2.10.1
+    version: 2.11.1
   - name: audit_helper
     package: dbt-labs/audit_helper
     version: 0.14.0
   - name: audit_helper_ext
     package: infinitelambda/audit_helper_ext
-    version: 0.11.0
-sha1_hash: 9e12422d208339c9c0467eb3864bc1567c0f786c
+    version: 0.16.0
+  - name: dbt_profiler
+    package: data-mie/dbt_profiler
+    version: 1.0.0
+sha1_hash: 7d63644ec429df1fa2ee645575f78ce8cb5c9095

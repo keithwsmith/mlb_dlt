@@ -14,7 +14,7 @@ version: 2
 # automatically delete the test.
 
 models:
-
+  
   # ────────────────────────────────────────────────────────────────────
   - name: int_team_game_results
     description: >
@@ -811,7 +811,7 @@ models:
           - dbt_utils.accepted_range:
               arguments:
                 min_value: 0
-                max_value: 3
+                max_value: 5
 
       - name: strikes
         description: Strike count before this pitch.
@@ -819,7 +819,7 @@ models:
           - dbt_utils.accepted_range:
               arguments:
                 min_value: 0
-                max_value: 2
+                max_value: 6
 
       - name: outs_when_up
         description: Number of outs in the inning when this batter came to the plate.

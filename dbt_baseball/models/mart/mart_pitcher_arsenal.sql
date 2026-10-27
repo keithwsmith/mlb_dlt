@@ -24,6 +24,9 @@ pitch_types as (
 select
     p.season,
     p.pitcher_id,
+	p.pitcher_name 												as pitcher_name,
+	p.batter_id													as batter_id,
+	p.batter_name												as batter_name,
     p.pitch_type_code,
     pt.pitch_type_description,
     pt.pitch_category,
@@ -72,4 +75,4 @@ select
 from pitches p
 left join pitch_types pt
     on p.pitch_type_code = pt.pitch_type_code
-group by p.season, p.pitcher_id, p.pitch_type_code, pt.pitch_type_description, pt.pitch_category
+group by p.season, p.pitcher_id, p.pitch_type_code, pt.pitch_type_description, pt.pitch_category,p.pitcher_name,p.batter_id	,p.batter_name
