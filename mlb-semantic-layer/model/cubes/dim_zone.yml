@@ -1,0 +1,44 @@
+cubes:
+  - name: dim_zone
+    sql_table: silver.dim_zone
+    data_source: default
+    title: "Strike Zone Region"
+    description: "One row per strike zone grid region. NOTE: zone_id and is_in_zone were missing from this cube entirely, despite int_pitches_enriched.sql's actual join (ON p.zone = z.zone_id) and coalesce(z.is_in_zone, 0) both depending on them -- that join has likely never resolved correctly. Added both back based on what the consuming SQL requires; worth confirming against dim_zone.sql directly."
+
+    joins: []
+    # Previous version had a self-referential join here
+    # ({CUBE}.zone_id = {zones.id}) -- removed. There's no separate
+    # "zones" cube; this cube IS the zone data.
+
+    dimensions:
+      - name: zone_id
+        sql: zone_id
+        type: number
+        primary_key: true
+        # Added back -- was missing entirely, but int_pitches_enriched.sql
+        # joins on exactly this column (p.zone = z.zone_id).
+
+      - name: zone_description
+        sql: zone_description
+        type: string
+        title: "Zone"
+
+      - name: zone_region
+        sql: zone_region
+        type: string
+        title: "Zone Region"
+
+      - name: is_in_zone
+        sql: is_in_zone
+        type: number
+        title: "Is In Zone?"
+        # Added back -- was missing entirely, but int_pitches_enriched.sql
+        # selects coalesce(z.is_in_zone, 0) from this exact column.
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Zone Regions"
+
+    pre_aggregations:
+      # Deliberately left empty -- small reference/lookup table.

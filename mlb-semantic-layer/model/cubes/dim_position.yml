@@ -1,0 +1,48 @@
+cubes:
+  - name: dim_position
+    sql_table: silver.dim_position
+    data_source: default
+    title: "Position"
+    description: "One row per distinct position code. Sources are prioritized (mlbplayers > player_stats > rosters) so the canonical name/type/abbreviation wins per code, rather than an arbitrary alphabetically-highest value."
+
+    joins: []
+    # Expected consumers: dim_player, dim_player_stats, and dim_draft all
+    # carry a position_code column and could each get a many_to_one join
+    # to this cube (added on their side, per this project's convention).
+    # Not added here or there yet -- let me know if you want those wired up.
+
+    dimensions:
+      - name: position_key
+        sql: position_key
+        type: string
+        primary_key: true
+        public: false
+
+      - name: position_code
+        sql: position_code
+        type: string
+        title: "Position Code"
+
+      - name: position_name
+        sql: position_name
+        type: string
+        title: "Position"
+
+      - name: position_type
+        sql: position_type
+        type: string
+        title: "Position Type"
+
+      - name: position_abbreviation
+        sql: position_abbreviation
+        type: string
+        title: "Pos."
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Positions"
+
+    pre_aggregations:
+      # Deliberately left empty -- small reference/lookup table, not a
+      # good pre-aggregation candidate (same reasoning as dim_award).

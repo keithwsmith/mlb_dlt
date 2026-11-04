@@ -1,0 +1,5 @@
+# Extends dim_teams under a distinct cube name -- see home_teams.yml for
+# the full explanation. This is the "away" role for dim_games.
+cubes:
+  - name: away_teams
+    extends: dim_teams

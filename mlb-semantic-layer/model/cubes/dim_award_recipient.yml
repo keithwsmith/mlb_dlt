@@ -1,0 +1,119 @@
+cubes:
+  - name: dim_award_recipient
+    sql_table: silver.dim_award_recipient
+    data_source: default
+    title: "Award Recipient"
+    description: "One row per player/award/season -- a player can have multiple rows if they won multiple awards or won across multiple seasons."
+
+    joins:
+      - name: dim_teams
+        # FIX: this join was previously missing the season condition
+        # entirely (just {CUBE}.team_id = {teams.id}) -- dim_teams' real
+        # unique key is (team_id, season), so a team_id-only join fans out
+        # across every season that team_id has a row for.
+        sql: "{CUBE}.team_id = {dim_teams.team_id} AND {CUBE}.season = {dim_teams.season}"
+        relationship: many_to_one
+
+      - name: dim_award
+        sql: "{CUBE}.award_key = {dim_award.award_key}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: recipient_key
+        sql: recipient_key
+        type: string
+        primary_key: true
+        public: false
+
+      - name: player_id
+        sql: player_id
+        type: number
+
+      - name: player_name
+        sql: player_name
+        type: string
+        title: "Player"
+
+      - name: team_id
+        sql: team_id
+        type: number
+        public: false
+
+      - name: award_key
+        sql: award_key
+        type: string
+        public: false
+
+      - name: award_id
+        sql: award_id
+        type: string
+
+      - name: award_name
+        sql: award_name
+        type: string
+        title: "Award"
+
+      - name: award_date
+        sql: award_date
+        type: time
+
+      - name: season
+        sql: season
+        type: number
+
+      - name: position_code
+        sql: position_code
+        type: string
+
+      - name: position_name
+        sql: position_name
+        type: string
+
+      - name: position_type
+        sql: position_type
+        type: string
+
+      - name: position_abbreviation
+        sql: position_abbreviation
+        type: string
+
+      - name: notes
+        sql: notes
+        type: string
+
+      - name: load_id
+        sql: load_id
+        type: string
+        public: false
+
+      - name: event_id
+        sql: event_id
+        type: string
+        public: false
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Award Wins"
+
+      - name: distinct_players
+        sql: player_id
+        type: count_distinct
+        title: "Distinct Award-Winning Players"
+
+      - name: distinct_awards
+        sql: award_key
+        type: count_distinct
+        title: "Distinct Awards Represented"
+
+    pre_aggregations:
+      - name: main
+        measures:
+          - CUBE.count
+          - CUBE.distinct_players
+        dimensions:
+          - CUBE.award_name
+          - CUBE.position_abbreviation
+        time_dimension: CUBE.award_date
+        granularity: year
+        partition_granularity: year

@@ -1,0 +1,484 @@
+cubes:
+  - name: dim_game_details
+    sql_table: silver.dim_game_details
+    data_source: default
+    title: "Game Details"
+    description: "One row per game -- weather, attendance, decisions (W/L/Save), and full home/away batting + pitching box-score totals for that single game."
+
+    joins:
+      # 1:1 with dim_games on game_pk (this table shares that grain).
+      # Couldn't confirm dim_games' cube name/key from here -- verify
+      # before relying on it.
+      - name: dim_games
+        sql: "{CUBE}.game_pk = {dim_games.game_pk}"
+        relationship: one_to_one
+
+      - name: winning_pitchers
+        # Extends dim_player under a distinct name -- see winning_pitchers.yml.
+        # Guarded to the CURRENT SCD2 version, same pattern as every other
+        # join to dim_player in this project.
+        sql: "{CUBE}.winning_pitcher_id = {winning_pitchers.player_id} AND {winning_pitchers.is_current} = 1"
+        relationship: many_to_one
+
+      - name: losing_pitchers
+        sql: "{CUBE}.losing_pitcher_id = {losing_pitchers.player_id} AND {losing_pitchers.is_current} = 1"
+        relationship: many_to_one
+
+      - name: save_pitchers
+        sql: "{CUBE}.save_pitcher_id = {save_pitchers.player_id} AND {save_pitchers.is_current} = 1"
+        relationship: many_to_one
+
+    dimensions:
+      - name: game_pk
+        sql: game_pk
+        type: number
+        primary_key: true
+        public: false
+
+      # ── Weather ────────────────────────────────────────────────
+      - name: weather_condition
+        sql: weather_condition
+        type: string
+        title: "Weather Condition"
+
+      - name: weather_temp
+        sql: weather_temp
+        type: number
+        title: "Temperature"
+        # Retyped from string -> number (assumed degrees) -- verify
+        # actual stored format before relying on numeric filtering.
+
+      - name: weather_wind
+        sql: weather_wind
+        type: string
+        title: "Wind"
+
+      # ── Game info ──────────────────────────────────────────────
+      - name: attendance
+        sql: attendance
+        type: number
+        title: "Attendance"
+
+      - name: first_pitch
+        sql: first_pitch
+        type: time
+        title: "First Pitch"
+
+      - name: game_duration_minutes
+        sql: game_duration_minutes
+        type: number
+        title: "Duration (min)"
+
+      # ── Decisions ──────────────────────────────────────────────
+      - name: winning_pitcher_id
+        sql: winning_pitcher_id
+        type: number
+        public: false
+
+      - name: winning_pitcher_name
+        sql: winning_pitcher_name
+        type: string
+        title: "Winning Pitcher"
+
+      - name: losing_pitcher_id
+        sql: losing_pitcher_id
+        type: number
+        public: false
+
+      - name: losing_pitcher_name
+        sql: losing_pitcher_name
+        type: string
+        title: "Losing Pitcher"
+
+      - name: save_pitcher_id
+        sql: save_pitcher_id
+        type: number
+        public: false
+
+      - name: save_pitcher_name
+        sql: save_pitcher_name
+        type: string
+        title: "Save Pitcher"
+
+      # ── Home batting (raw per-game values, hidden -- use the sum
+      #    measures below to aggregate across games) ────────────────
+      - name: home_runs
+        sql: home_runs
+        type: number
+        public: false
+        title: "Home Team Runs Scored (this game)"
+
+      - name: home_hits
+        sql: home_hits
+        type: number
+        public: false
+
+      - name: home_doubles
+        sql: home_doubles
+        type: number
+        public: false
+
+      - name: home_triples
+        sql: home_triples
+        type: number
+        public: false
+
+      - name: home_home_runs
+        sql: home_home_runs
+        type: number
+        public: false
+        title: "Home Team Home Runs (this game)"
+
+      - name: home_rbi
+        sql: home_rbi
+        type: number
+        public: false
+
+      - name: home_stolen_bases
+        sql: home_stolen_bases
+        type: number
+        public: false
+
+      - name: home_strikeouts
+        sql: home_strikeouts
+        type: number
+        public: false
+
+      - name: home_walks
+        sql: home_walks
+        type: number
+        public: false
+
+      - name: home_left_on_base
+        sql: home_left_on_base
+        type: number
+        public: false
+
+      # ── Away batting ─────────────────────────────────────────────
+      - name: away_runs
+        sql: away_runs
+        type: number
+        public: false
+        title: "Away Team Runs Scored (this game)"
+
+      - name: away_hits
+        sql: away_hits
+        type: number
+        public: false
+
+      - name: away_doubles
+        sql: away_doubles
+        type: number
+        public: false
+
+      - name: away_triples
+        sql: away_triples
+        type: number
+        public: false
+
+      - name: away_home_runs
+        sql: away_home_runs
+        type: number
+        public: false
+        title: "Away Team Home Runs (this game)"
+
+      - name: away_rbi
+        sql: away_rbi
+        type: number
+        public: false
+
+      - name: away_stolen_bases
+        sql: away_stolen_bases
+        type: number
+        public: false
+
+      - name: away_strikeouts
+        sql: away_strikeouts
+        type: number
+        public: false
+
+      - name: away_walks
+        sql: away_walks
+        type: number
+        public: false
+
+      - name: away_left_on_base
+        sql: away_left_on_base
+        type: number
+        public: false
+
+      # ── Home pitching ────────────────────────────────────────────
+      - name: home_pitching_strikeouts
+        sql: home_pitching_strikeouts
+        type: number
+        public: false
+
+      - name: home_pitching_walks
+        sql: home_pitching_walks
+        type: number
+        public: false
+
+      - name: home_pitching_hits_allowed
+        sql: home_pitching_hits_allowed
+        type: number
+        public: false
+
+      - name: home_pitching_runs_allowed
+        sql: home_pitching_runs_allowed
+        type: number
+        public: false
+
+      - name: home_pitching_earned_runs
+        sql: home_pitching_earned_runs
+        type: number
+        public: false
+
+      - name: home_pitching_home_runs_allowed
+        sql: home_pitching_home_runs_allowed
+        type: number
+        public: false
+
+      # ── Away pitching ────────────────────────────────────────────
+      - name: away_pitching_strikeouts
+        sql: away_pitching_strikeouts
+        type: number
+        public: false
+
+      - name: away_pitching_walks
+        sql: away_pitching_walks
+        type: number
+        public: false
+
+      - name: away_pitching_hits_allowed
+        sql: away_pitching_hits_allowed
+        type: number
+        public: false
+
+      - name: away_pitching_runs_allowed
+        sql: away_pitching_runs_allowed
+        type: number
+        public: false
+
+      - name: away_pitching_earned_runs
+        sql: away_pitching_earned_runs
+        type: number
+        public: false
+
+      - name: away_pitching_home_runs_allowed
+        sql: away_pitching_home_runs_allowed
+        type: number
+        public: false
+
+      # ── Audit (hidden) ───────────────────────────────────────────
+      - name: load_id
+        sql: load_id
+        type: string
+        public: false
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Games"
+
+      - name: total_attendance
+        sql: attendance
+        type: sum
+        title: "Total Attendance"
+
+      - name: avg_attendance
+        sql: attendance
+        type: avg
+        title: "Average Attendance"
+
+      - name: avg_game_duration_minutes
+        sql: game_duration_minutes
+        type: avg
+        title: "Average Game Duration (min)"
+        # avg, not sum -- summing durations across many games isn't a
+        # meaningful metric.
+
+      - name: distinct_winning_pitchers
+        sql: winning_pitcher_id
+        type: count_distinct
+        title: "Distinct Winning Pitchers"
+
+      - name: distinct_losing_pitchers
+        sql: losing_pitcher_id
+        type: count_distinct
+        title: "Distinct Losing Pitchers"
+
+      - name: distinct_save_pitchers
+        sql: save_pitcher_id
+        type: count_distinct
+        title: "Distinct Save Pitchers"
+
+      # Home batting totals
+      - name: total_home_runs_scored
+        sql: home_runs
+        type: sum
+        title: "Total Home Team Runs Scored"
+
+      - name: total_home_hits
+        sql: home_hits
+        type: sum
+        title: "Total Home Team Hits"
+
+      - name: total_home_doubles
+        sql: home_doubles
+        type: sum
+        title: "Total Home Team Doubles"
+
+      - name: total_home_triples
+        sql: home_triples
+        type: sum
+        title: "Total Home Team Triples"
+
+      - name: total_home_home_runs
+        sql: home_home_runs
+        type: sum
+        title: "Total Home Team Home Runs"
+
+      - name: total_home_rbi
+        sql: home_rbi
+        type: sum
+        title: "Total Home Team RBI"
+
+      - name: total_home_stolen_bases
+        sql: home_stolen_bases
+        type: sum
+        title: "Total Home Team Stolen Bases"
+
+      - name: total_home_strikeouts
+        sql: home_strikeouts
+        type: sum
+        title: "Total Home Team Strikeouts (Batting)"
+
+      - name: total_home_walks
+        sql: home_walks
+        type: sum
+        title: "Total Home Team Walks (Batting)"
+
+      - name: total_home_left_on_base
+        sql: home_left_on_base
+        type: sum
+        title: "Total Home Team Left On Base"
+
+      # Away batting totals
+      - name: total_away_runs_scored
+        sql: away_runs
+        type: sum
+        title: "Total Away Team Runs Scored"
+
+      - name: total_away_hits
+        sql: away_hits
+        type: sum
+        title: "Total Away Team Hits"
+
+      - name: total_away_doubles
+        sql: away_doubles
+        type: sum
+        title: "Total Away Team Doubles"
+
+      - name: total_away_triples
+        sql: away_triples
+        type: sum
+        title: "Total Away Team Triples"
+
+      - name: total_away_home_runs
+        sql: away_home_runs
+        type: sum
+        title: "Total Away Team Home Runs"
+
+      - name: total_away_rbi
+        sql: away_rbi
+        type: sum
+        title: "Total Away Team RBI"
+
+      - name: total_away_stolen_bases
+        sql: away_stolen_bases
+        type: sum
+        title: "Total Away Team Stolen Bases"
+
+      - name: total_away_strikeouts
+        sql: away_strikeouts
+        type: sum
+        title: "Total Away Team Strikeouts (Batting)"
+
+      - name: total_away_walks
+        sql: away_walks
+        type: sum
+        title: "Total Away Team Walks (Batting)"
+
+      - name: total_away_left_on_base
+        sql: away_left_on_base
+        type: sum
+        title: "Total Away Team Left On Base"
+
+      # Home pitching totals
+      - name: total_home_pitching_strikeouts
+        sql: home_pitching_strikeouts
+        type: sum
+        title: "Total Home Team Pitching Strikeouts"
+
+      - name: total_home_pitching_walks
+        sql: home_pitching_walks
+        type: sum
+        title: "Total Home Team Pitching Walks"
+
+      - name: total_home_pitching_hits_allowed
+        sql: home_pitching_hits_allowed
+        type: sum
+        title: "Total Home Team Hits Allowed"
+
+      - name: total_home_pitching_runs_allowed
+        sql: home_pitching_runs_allowed
+        type: sum
+        title: "Total Home Team Runs Allowed"
+
+      - name: total_home_pitching_earned_runs
+        sql: home_pitching_earned_runs
+        type: sum
+        title: "Total Home Team Earned Runs Allowed"
+
+      - name: total_home_pitching_home_runs_allowed
+        sql: home_pitching_home_runs_allowed
+        type: sum
+        title: "Total Home Team Home Runs Allowed"
+
+      # Away pitching totals
+      - name: total_away_pitching_strikeouts
+        sql: away_pitching_strikeouts
+        type: sum
+        title: "Total Away Team Pitching Strikeouts"
+
+      - name: total_away_pitching_walks
+        sql: away_pitching_walks
+        type: sum
+        title: "Total Away Team Pitching Walks"
+
+      - name: total_away_pitching_hits_allowed
+        sql: away_pitching_hits_allowed
+        type: sum
+        title: "Total Away Team Hits Allowed"
+
+      - name: total_away_pitching_runs_allowed
+        sql: away_pitching_runs_allowed
+        type: sum
+        title: "Total Away Team Runs Allowed"
+
+      - name: total_away_pitching_earned_runs
+        sql: away_pitching_earned_runs
+        type: sum
+        title: "Total Away Team Earned Runs Allowed"
+
+      - name: total_away_pitching_home_runs_allowed
+        sql: away_pitching_home_runs_allowed
+        type: sum
+        title: "Total Away Team Home Runs Allowed"
+
+    pre_aggregations:
+      # Worth adding once dim_games' join above is confirmed -- e.g. a
+      # rollup by season using dim_games.game_date as the time_dimension,
+      # since dim_game_details itself has no date/time column of its own
+      # to anchor a rollup other than first_pitch (a time-of-day, not a
+      # calendar date).

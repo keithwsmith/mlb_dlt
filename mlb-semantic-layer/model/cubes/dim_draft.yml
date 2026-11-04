@@ -1,0 +1,341 @@
+cubes:
+  - name: dim_draft
+    sql_table: silver.dim_draft
+    data_source: default
+    title: "Draft Pick"
+    description: "One row per draft pick (player/round/pick/year). NOTE: a player can appear multiple times across different draft years if they were drafted, didn't sign, and re-entered a later draft -- use distinct_players_drafted, not count, to answer 'how many players' questions."
+
+    joins:
+      - name: dim_teams
+        # Compound join -- dim_teams' real unique key is (team_id, season).
+        sql: "{CUBE}.team_id = {dim_teams.team_id} AND {CUBE}.person_draft_year = {dim_teams.season}"
+        relationship: many_to_one
+
+      - name: dim_player
+        # Only join to the CURRENT version of the (SCD2) player dimension,
+        # to avoid fan-out across a player's historical versions.
+        sql: "{CUBE}.person_id = {dim_player.player_id} AND {dim_player.is_current} = 1"
+        relationship: many_to_one
+
+      - name: dim_position
+        sql: "{CUBE}.person_primary_position_code = {dim_position.position_code}"
+        relationship: many_to_one
+
+      - name: dim_school
+        sql: "{CUBE}.school_name = {dim_school.school_name}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: draft_key
+        sql: draft_key
+        type: string
+        primary_key: true
+        public: false
+
+      # ── Player identifiers ──────────────────────────────────────
+      - name: person_id
+        sql: person_id
+        type: number
+        title: "Player ID"
+
+      - name: bis_player_id
+        sql: bis_player_id
+        type: number
+        title: "BIS Player ID"
+        public: false
+
+      - name: round_pick_number
+        sql: round_pick_number
+        type: number
+        title: "Round"
+
+      - name: pick_number
+        sql: pick_number
+        type: number
+        title: "Pick Number"
+
+      - name: person_draft_year
+        sql: person_draft_year
+        type: string
+        title: "Draft Year"
+        # STRING, not number -- the underlying dbt expression forces a text
+        # type (see model header notes). Also used as half of the teams
+        # join above.
+
+      # ── Player name ──────────────────────────────────────────────
+      - name: person_full_name
+        sql: person_full_name
+        type: string
+        title: "Player"
+
+      - name: person_first_name
+        sql: person_first_name
+        type: string
+        title: "First Name"
+        public: false
+
+      - name: person_last_name
+        sql: person_last_name
+        type: string
+        title: "Last Name"
+        public: false
+
+      - name: person_nick_name
+        sql: person_nick_name
+        type: string
+        title: "Nickname"
+        public: false
+
+      - name: person_boxscore_name
+        sql: person_boxscore_name
+        type: string
+        title: "Boxscore Name"
+        public: false
+
+      # ── Player demographics ─────────────────────────────────────
+      - name: person_birth_date
+        sql: person_birth_date
+        type: time
+        title: "Birth Date"
+
+      - name: person_birth_city
+        sql: person_birth_city
+        type: string
+        title: "Birth City"
+
+      - name: person_birth_state_province
+        sql: person_birth_state_province
+        type: string
+        title: "Birth State/Province"
+
+      - name: person_birth_country
+        sql: person_birth_country
+        type: string
+        title: "Birth Country"
+
+      - name: person_death_date
+        sql: person_death_date
+        type: time
+        title: "Death Date"
+        public: false
+
+      - name: person_gender
+        sql: person_gender
+        type: string
+        title: "Gender"
+        public: false
+
+      # ── Player physical ─────────────────────────────────────────
+      - name: person_height
+        sql: person_height
+        type: string
+        title: "Height"
+        # Stored as-is from source, not cast -- likely a display string
+        # (e.g. 6'2") rather than a numeric value. Verify before assuming
+        # you can sort/filter numerically on it.
+
+      - name: person_weight
+        sql: person_weight
+        type: number
+        title: "Weight (lbs)"
+
+      # ── Player handedness ───────────────────────────────────────
+      - name: person_bat_side_code
+        sql: person_bat_side_code
+        type: string
+        title: "Batting Side Code"
+
+      - name: person_bat_side_description
+        sql: person_bat_side_description
+        type: string
+        title: "Bats"
+
+      - name: person_pitch_hand_code
+        sql: person_pitch_hand_code
+        type: string
+        title: "Throwing Hand Code"
+
+      - name: person_pitch_hand_description
+        sql: person_pitch_hand_description
+        type: string
+        title: "Throws"
+
+      # ── Player career ──────────────────────────────────────────
+      - name: person_is_active
+        sql: person_is_active
+        type: number
+        title: "Currently Active?"
+        # Assumed 0/1 flag, matching this project's convention elsewhere --
+        # verify actual stored values (Cube's auto-scaffold had typed this
+        # as string, which is very likely wrong given the naming and how
+        # every other flag in this project is stored).
+
+      - name: person_is_player
+        sql: person_is_player
+        type: number
+        title: "Is Player?"
+        public: false
+
+      - name: person_is_verified
+        sql: person_is_verified
+        type: number
+        title: "Verified?"
+        public: false
+
+      - name: person_mlb_debut_date
+        sql: person_mlb_debut_date
+        type: time
+        title: "MLB Debut"
+
+      - name: years_to_mlb_debut
+        # person_draft_year is STRING-typed (see note above), so it needs
+        # an explicit cast before it can be subtracted from YEAR(...).
+        # NULL for any pick that never debuted -- YEAR(NULL) - x is just
+        # NULL, not an error, so this silently excludes non-debuts rather
+        # than raising.
+        sql: "YEAR({CUBE}.person_mlb_debut_date) - CAST({CUBE}.person_draft_year AS INTEGER)"
+        type: number
+        title: "Years to MLB Debut"
+
+      - name: person_last_played_date
+        sql: person_last_played_date
+        type: time
+        title: "Last Played Date"
+        public: false
+
+      # ── Player position ───────────────────────────────────────────
+      - name: person_primary_position_code
+        sql: person_primary_position_code
+        type: string
+        title: "Position Code"
+        public: false
+
+      - name: person_primary_position_name
+        sql: person_primary_position_name
+        type: string
+        title: "Position"
+
+      - name: person_primary_position_abbreviation
+        sql: person_primary_position_abbreviation
+        type: string
+        title: "Pos."
+
+      # ── Player home ───────────────────────────────────────────────
+      - name: home_city
+        sql: home_city
+        type: string
+        title: "Home City"
+
+      - name: home_state
+        sql: home_state
+        type: string
+        title: "Home State"
+
+      - name: home_country
+        sql: home_country
+        type: string
+        title: "Home Country"
+
+      # ── Team ─────────────────────────────────────────────────────
+      - name: team_id
+        sql: team_id
+        type: number
+        title: "Team ID"
+        public: false
+
+      - name: team_name
+        sql: team_name
+        type: string
+        title: "Drafted By"
+
+      - name: team_all_star_status
+        sql: team_all_star_status
+        type: string
+        title: "Team All-Star Status"
+        public: false
+        # Type/meaning not confirmed from the SQL -- verify actual values.
+
+      # ── School ───────────────────────────────────────────────────
+      - name: school_name
+        sql: school_name
+        type: string
+        title: "School"
+
+      - name: school_city
+        sql: school_city
+        type: string
+        title: "School City"
+
+      - name: school_state
+        sql: school_state
+        type: string
+        title: "School State"
+
+      - name: school_country
+        sql: school_country
+        type: string
+        title: "School Country"
+
+      - name: school_class
+        sql: school_class
+        type: string
+        title: "Class"
+
+      # ── Draft type ───────────────────────────────────────────────
+      - name: draft_type_code
+        sql: draft_type_code
+        type: string
+        title: "Draft Type Code"
+        public: false
+
+      - name: draft_type_description
+        sql: draft_type_description
+        type: string
+        title: "Draft Type"
+
+      # ── Links / audit (hidden) ──────────────────────────────────
+      - name: person_link
+        sql: person_link
+        type: string
+        title: "Player API Link"
+        public: false
+
+      - name: headshot_link
+        sql: headshot_link
+        type: string
+        title: "Headshot Link"
+        public: false
+
+      - name: team_link
+        sql: team_link
+        type: string
+        title: "Team API Link"
+        public: false
+
+      - name: team_spring_league_link
+        sql: team_spring_league_link
+        type: string
+        title: "Spring League Link"
+        public: false
+
+      - name: source_dlt_id
+        sql: source_dlt_id
+        type: string
+        title: "Source Row ID"
+        public: false
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Draft Picks"
+
+      - name: distinct_players_drafted
+        sql: person_id
+        type: count_distinct
+        title: "Distinct Players Drafted"
+
+    pre_aggregations:
+      # Deliberately left empty -- person_draft_year is string-typed (see
+      # note above), so there's no real time-typed column here to serve
+      # as a pre-aggregation's time_dimension without further modeling
+      # work upstream.

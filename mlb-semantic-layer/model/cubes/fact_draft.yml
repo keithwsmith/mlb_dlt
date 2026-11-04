@@ -1,0 +1,141 @@
+cubes:
+  - name: fact_draft
+    sql_table: silver.fact_draft
+    data_source: default
+    title: "Draft Pick (Fact)"
+    description: "One row per draft pick event -- ONLY the meaningfully aggregatable measures at pick grain (per the model's own header comment). Player name/team/school/position/text all live in dim_draft, joined via draft_key. Additive: pick_value, signing_bonus (safe to sum). Semi-additive: pick_number, round_pick_number, rank, current_age (use avg/min/max, never sum)."
+
+    joins:
+      - name: dim_draft
+        sql: "{CUBE}.draft_key = {dim_draft.draft_key}"
+        relationship: one_to_one
+
+    dimensions:
+      - name: draft_key
+        sql: draft_key
+        type: string
+        primary_key: true
+        public: false
+
+      - name: person_id
+        sql: person_id
+        type: number
+        public: false
+
+      - name: person_draft_year
+        sql: person__draft_year
+        type: string
+        title: "Draft Year"
+        # NOTE: sourced from person__draft_year (double underscore) -- the
+        # duplicate/less-reliable of dim_draft's two draft-year columns
+        # (fallback '0', vs. person_draft_year's fallback 'Unknown'; see
+        # dim_draft.sql notes). This model was built against that one, not
+        # the one flagged as canonical -- worth reconciling.
+
+      - name: pick_number
+        sql: pick_number
+        type: number
+        title: "Pick Number"
+        # Semi-additive per the model's own header -- use avg/min/max
+        # measures below, not sum.
+
+      - name: round_pick_number
+        sql: round_pick_number
+        type: number
+        title: "Round"
+        # Semi-additive -- same caveat as pick_number.
+
+      - name: rank
+        sql: rank
+        type: number
+        title: "Rank"
+        # Semi-additive -- same caveat as pick_number.
+
+      - name: pick_value
+        sql: pick_value
+        type: number
+        public: false
+        title: "Pick Value ($)"
+        # Fully additive -- safe to sum. Kept public:false since the sum/
+        # avg measures below are the intended way to use this.
+
+      - name: signing_bonus
+        sql: signing_bonus
+        type: number
+        public: false
+        title: "Signing Bonus ($)"
+        # Fully additive -- same as pick_value.
+
+      - name: current_age
+        sql: current_age
+        type: number
+        title: "Age at Draft"
+        # Semi-additive -- same caveat as pick_number.
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Draft Picks"
+
+      - name: distinct_players
+        sql: person_id
+        type: count_distinct
+        title: "Distinct Players Drafted"
+
+      # ── Additive: sum is meaningful ──────────────────────────────
+      - name: total_pick_value
+        sql: pick_value
+        type: sum
+        title: "Total Pick Value"
+
+      - name: avg_pick_value
+        sql: pick_value
+        type: avg
+        title: "Average Pick Value"
+
+      - name: total_signing_bonus
+        sql: signing_bonus
+        type: sum
+        title: "Total Signing Bonus"
+
+      - name: avg_signing_bonus
+        sql: signing_bonus
+        type: avg
+        title: "Average Signing Bonus"
+
+      # ── Semi-additive: avg/min/max only, never sum ───────────────
+      - name: avg_pick_number
+        sql: pick_number
+        type: avg
+        title: "Average Pick Number"
+
+      - name: avg_round_pick_number
+        sql: round_pick_number
+        type: avg
+        title: "Average Round"
+
+      - name: avg_rank
+        sql: rank
+        type: avg
+        title: "Average Rank"
+
+      - name: min_rank
+        sql: rank
+        type: min
+        title: "Best (Lowest) Rank"
+
+      - name: max_rank
+        sql: rank
+        type: max
+        title: "Worst (Highest) Rank"
+
+      - name: avg_current_age
+        sql: current_age
+        type: avg
+        title: "Average Age at Draft"
+
+    pre_aggregations:
+      # Deliberately left empty -- no date/time column here to anchor a
+      # rollup on directly (person_draft_year is a text field, not a real
+      # date); would need to pull season/date context in via the
+      # dim_draft join first.

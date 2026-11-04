@@ -1,0 +1,340 @@
+cubes:
+  - name: dim_games
+    sql_table: silver.dim_games
+    data_source: default
+    title: "Game"
+    description: "One row per game (excludes Cancelled/Postponed games -- filtered out upstream). Home/away team names, scores, and a friendly game_type_desc are already denormalized here for convenience; join to dim_game_type/dim_game_status for the fuller code-table attributes."
+
+    joins:
+      - name: dim_game_type
+        sql: "{CUBE}.game_type = {dim_game_type.game_type_code}"
+        relationship: many_to_one
+
+      - name: dim_game_status
+        # Compound join -- dim_game_status's real key is the (coded_game_state,
+        # status_code) PAIR, not coded_game_state alone. See dim_game_status.yml.
+        sql: "{CUBE}.coded_game_state = {dim_game_status.status_coded_game_state} AND {CUBE}.status_code = {dim_game_status.status_status_code}"
+        relationship: many_to_one
+
+      - name: dim_season
+        sql: "{CUBE}.season = {dim_season.season}"
+        relationship: many_to_one
+
+      - name: dim_venue
+        # dim_venue's actual key field name not confirmed from here --
+        # verify against dim_venue.yml (assumed `venue_id`).
+        sql: "{CUBE}.venue_id = {dim_venue.venue_id}"
+        relationship: many_to_one
+
+      - name: home_teams
+        # Extends dim_teams under a distinct name -- see home_teams.yml.
+        # Compound join, same reasoning as every other join to dim_teams
+        # in this project (real key is team_id + season, not team_id alone).
+        sql: "{CUBE}.home_team_id = {home_teams.team_id} AND {CUBE}.season = {home_teams.season}"
+        relationship: many_to_one
+
+      - name: away_teams
+        # Extends dim_teams under a distinct name -- see away_teams.yml.
+        sql: "{CUBE}.away_team_id = {away_teams.team_id} AND {CUBE}.season = {away_teams.season}"
+        relationship: many_to_one
+
+      # NOT joined here: dim_game_details (game_pk). See notes below.
+
+    dimensions:
+      - name: game_pk
+        sql: game_pk
+        type: number
+        primary_key: true
+        title: "Game"
+        # Kept public (unlike other cubes' hashed surrogate keys) -- game_pk
+        # is a real, commonly-referenced business identifier used
+        # throughout this project (int_player_game_stats, dim_game_details,
+        # etc. all key off it directly), not just an internal hash.
+
+      - name: season
+        sql: season
+        type: number
+
+      - name: game_type
+        sql: game_type
+        type: string
+        public: false
+        title: "Game Type Code"
+
+      - name: game_type_desc
+        sql: game_type_desc
+        type: string
+        title: "Game Type"
+
+      - name: game_date
+        sql: game_date
+        type: time
+        title: "Game Date"
+
+      - name: game_datetime
+        sql: game_datetime
+        type: time
+        public: false
+
+      - name: official_date
+        sql: official_date
+        type: time
+        public: false
+
+      - name: abstract_game_state
+        sql: abstract_game_state
+        type: string
+        public: false
+
+      - name: coded_game_state
+        sql: coded_game_state
+        type: string
+        public: false
+        # Needed for the dim_game_status join above -- kept for
+        # reference/debugging.
+
+      - name: detailed_state
+        sql: detailed_state
+        type: string
+        title: "Game Status"
+
+      - name: status_code
+        sql: status_code
+        type: string
+        public: false
+        # Needed for the dim_game_status join above.
+
+      - name: is_start_time_tbd
+        sql: is_start_time_tbd
+        type: number
+        title: "Start Time TBD?"
+
+      - name: is_final
+        sql: is_final
+        type: number
+        title: "Is Final?"
+
+      # ── Home team ──────────────────────────────────────────────
+      - name: home_team_id
+        sql: home_team_id
+        type: number
+        public: false
+        # NOT joined to dim_team here. dim_team would need to be joined
+        # TWICE (once per home/away role), which Cube's basic join
+        # declarations can't express against a single target cube --
+        # that needs the "extends" pattern (distinct home_teams/away_teams
+        # sub-cubes each extending dim_team/teams). home_team_name is
+        # already denormalized below for basic display without a join.
+
+      - name: home_team_name
+        sql: home_team_name
+        type: string
+        title: "Home Team"
+
+      - name: home_score
+        sql: home_score
+        type: number
+        title: "Home Score"
+
+      - name: home_is_winner
+        sql: home_is_winner
+        type: number
+        public: false
+
+      # ── Away team ──────────────────────────────────────────────
+      - name: away_team_id
+        sql: away_team_id
+        type: number
+        public: false
+        # Same caveat as home_team_id above.
+
+      - name: away_team_name
+        sql: away_team_name
+        type: string
+        title: "Away Team"
+
+      - name: away_score
+        sql: away_score
+        type: number
+        title: "Away Score"
+
+      - name: away_is_winner
+        sql: away_is_winner
+        type: number
+        public: false
+
+      # ── Derived outcome fields ───────────────────────────────────
+      - name: winning_team_id
+        sql: winning_team_id
+        type: number
+        public: false
+
+      - name: losing_team_id
+        sql: losing_team_id
+        type: number
+        public: false
+
+      - name: run_diff
+        sql: run_diff
+        type: number
+        title: "Run Differential"
+
+      - name: is_tie
+        sql: is_tie
+        type: number
+        title: "Is Tie?"
+
+      - name: is_one_run_game
+        sql: "ABS({CUBE}.run_diff) = 1"
+        type: boolean
+        title: "One-Run Game?"
+        # Added for "decided by one run" / "one-run game" style questions
+        # -- run_diff is a real column but the app-layer LLM has no way to
+        # express |run_diff| = 1 through a plain equals/gt/lt filter on a
+        # raw number field. This is a computed dimension so it CAN be
+        # filtered directly: {"member": "dim_games.is_one_run_game",
+        # "operator": "equals", "values": ["true"]}.
+        #
+        # NOTE: this cube is one row per GAME, not per team -- there's no
+        # single "team" dimension to group by, only home_team_name and
+        # away_team_name separately. "Which TEAM played the most one-run
+        # games" still needs two queries (one grouped by home_team_name,
+        # one by away_team_name, both filtered is_one_run_game = true,
+        # both using one_run_games_count below) with the per-team counts
+        # summed on the application side -- this dimension/measure makes
+        # that possible, it doesn't do the home+away merge for you. See
+        # the one_run_games_count measure below for the count itself.
+
+      # ── Venue ─────────────────────────────────────────────────────
+      - name: venue_id
+        sql: venue_id
+        type: number
+        public: false
+
+      - name: venue_name
+        sql: venue_name
+        type: string
+        title: "Venue"
+
+      # ── Game / series metadata ────────────────────────────────────
+      - name: game_number
+        sql: game_number
+        type: number
+        title: "Game # (Doubleheader)"
+
+      - name: double_header
+        sql: double_header
+        type: string
+        public: false
+
+      - name: day_night
+        sql: day_night
+        type: string
+        title: "Day/Night"
+
+      - name: scheduled_innings
+        sql: scheduled_innings
+        type: number
+        public: false
+
+      - name: games_in_series
+        sql: games_in_series
+        type: number
+        public: false
+
+      - name: series_game_number
+        sql: series_game_number
+        type: number
+        public: false
+
+      - name: series_description
+        sql: series_description
+        type: string
+        title: "Series"
+
+      - name: public_facing
+        sql: public_facing
+        type: number
+        public: false
+        # Meaning/encoding not confirmed from the SQL -- verify.
+
+      # ── Audit (hidden) ───────────────────────────────────────────
+      - name: load_id
+        sql: load_id
+        type: string
+        public: false
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Games"
+
+      - name: final_games_count
+        type: count
+        title: "Number of Completed Games"
+        filters:
+          - sql: "{CUBE}.is_final = 1"
+
+      - name: one_run_games_count
+        type: count
+        title: "Number of One-Run Games"
+        filters:
+          - sql: "ABS({CUBE}.run_diff) = 1"
+        # Same filtered-count pattern as final_games_count above. Combine
+        # with a season/is_final filter as needed -- e.g. "how many
+        # one-run games were played in 2025" is just this measure with a
+        # season filter, no dimension needed. For a PER-TEAM breakdown
+        # ("which team played the most"), this measure still has to be
+        # queried twice -- grouped by home_team_name and by
+        # away_team_name -- and the two result sets merged/summed by
+        # team name outside Cube (see is_one_run_game note above); Cube's
+        # JSON query API has no UNION, so a single query can't do this on
+        # its own no matter which measure/dimension combination is used.
+
+      - name: total_home_score
+        sql: home_score
+        type: sum
+        title: "Total Home Score"
+
+      - name: total_away_score
+        sql: away_score
+        type: sum
+        title: "Total Away Score"
+
+      - name: avg_run_diff
+        sql: run_diff
+        type: avg
+        title: "Average Run Differential"
+
+      - name: distinct_venues
+        sql: venue_id
+        type: count_distinct
+        title: "Distinct Venues"
+
+      - name: distinct_home_teams
+        sql: home_team_id
+        type: count_distinct
+        title: "Distinct Home Teams"
+
+      - name: distinct_away_teams
+        sql: away_team_id
+        type: count_distinct
+        title: "Distinct Away Teams"
+
+    pre_aggregations:
+      # Unlike the lookup-table cubes (dim_award, dim_game_type,
+      # dim_game_status), this is a real pre-aggregation candidate --
+      # it's a substantial fact-shaped table with a genuine calendar date
+      # column (game_date) to anchor a rollup on.
+      - name: main
+        measures:
+          - CUBE.count
+          - CUBE.final_games_count
+          - CUBE.total_home_score
+          - CUBE.total_away_score
+        dimensions:
+          - CUBE.game_type_desc
+          - CUBE.detailed_state
+        time_dimension: CUBE.game_date
+        granularity: month
+        partition_granularity: year

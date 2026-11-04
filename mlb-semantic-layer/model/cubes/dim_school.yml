@@ -1,0 +1,64 @@
+cubes:
+  - name: dim_school
+    sql_table: silver.dim_school
+    data_source: default
+    title: "School"
+    description: "One row per distinct school name (from draft records), with type/classification joined in from a separate lookup. NOTE: city/state/country/class are deduped per school via MAX() in the SQL -- the same alphabetical-max bug dim_position.sql identified and fixed for itself (\"'Right Field' beat 'Outfielder' purely because 'R' > 'O'\") is still present here unfixed. Worth applying the same source-priority/ROW_NUMBER fix if these fields ever look wrong for a school with inconsistent historical records."
+
+    joins: []
+    # Expected consumer: dim_draft already carries school_name/school_city/
+    # school_state/school_country/school_class as denormalized dimensions
+    # and could get a many_to_one join to this cube on school_name -- not
+    # added there yet, let me know if you want it wired up (same as the
+    # dim_position joins).
+
+    dimensions:
+      - name: school_key
+        sql: school_key
+        type: string
+        primary_key: true
+        public: false
+
+      - name: school_name
+        sql: school__name
+        type: string
+        title: "School"
+
+      - name: school_city
+        sql: school__city
+        type: string
+        title: "City"
+
+      - name: school_state
+        sql: school__state
+        type: string
+        title: "State"
+
+      - name: school_country
+        sql: school__country
+        type: string
+        title: "Country"
+
+      - name: school_school_class
+        sql: school__school_class
+        type: string
+        title: "Class"
+
+      - name: school_type
+        sql: school_type
+        type: string
+        title: "School Type"
+
+      - name: classified_by
+        sql: classified_by
+        type: string
+        title: "Classified By"
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Schools"
+
+    pre_aggregations:
+      # Deliberately left empty -- small reference/lookup table, not a
+      # good pre-aggregation candidate (same reasoning as dim_award).

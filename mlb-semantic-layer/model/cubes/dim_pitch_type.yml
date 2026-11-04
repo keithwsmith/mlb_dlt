@@ -1,0 +1,48 @@
+cubes:
+  - name: dim_pitch_type
+    sql_table: silver.dim_pitch_type
+    data_source: default
+    title: "Pitch Type"
+    description: "One row per distinct pitch type code, with its display name, plot color, and broad category (Fastball/Breaking/Offspeed/Other)."
+
+    joins: []
+    # Expected consumer: the pitch-level fact/int model (int_pitches_enriched)
+    # should join TO this cube on pitch_type_code, many_to_one -- not
+    # declared here since that file wasn't available to check.
+
+    dimensions:
+      - name: pitch_type_code
+        sql: pitch_type_code
+        type: string
+        primary_key: true
+        title: "Pitch Type Code"
+        # Kept public -- like dim_games.game_pk, this is a real,
+        # commonly-referenced code (FF, SL, CU, etc.) throughout
+        # pitch-level analysis, not just an internal hash.
+
+      - name: pitch_type_description
+        sql: pitch_type_description
+        type: string
+        title: "Pitch Type"
+
+      - name: pitch_category
+        sql: pitch_category
+        type: string
+        title: "Pitch Category"
+
+      - name: pitch_trail_color
+        sql: pitch_trail_color
+        type: string
+        public: false
+        title: "Trail Color"
+        # Plot/display color for pitch-trajectory visualizations --
+        # unlikely to be useful for filtering/grouping, hidden by default.
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Pitch Types"
+
+    pre_aggregations:
+      # Deliberately left empty -- small reference/lookup table, not a
+      # good pre-aggregation candidate (same reasoning as dim_award).

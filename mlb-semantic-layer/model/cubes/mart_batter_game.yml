@@ -1,0 +1,24 @@
+cubes:
+  - name: mart_batter_game
+    sql_table: silver.mart_batter_game
+    data_source: default
+
+    joins: []
+
+    dimensions:
+      - name: batter_side
+        sql: batter_side
+        type: string
+
+      - name: load_id
+        sql: load_id
+        type: string
+
+    measures:
+      - name: count
+        type: count
+
+    pre_aggregations:
+      # Pre-aggregation definitions go here.
+      # Learn more in the documentation: https://cube.dev/docs/caching/pre-aggregations/getting-started
+

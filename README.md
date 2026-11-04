@@ -16,7 +16,6 @@
 | [`ETLMonitor`](ETLMonitor/) | ETLMonitor.py | Monitors ETL pipeline runs and reports on load status, row counts, and errors |
 | [`mlb_test_output`](mlb_test_output/) | mlb_test_output.py | Renders dbt test results into a structured report for review |
 | [`mlb_latestgame_agent`](mlb_latestgame_agent/) | check_latest_game.py | Agent that checks for the latest completed MLB game and triggers an incremental load if new games are available |
-| [`cube_semantic_layer_tests`](cube_semantic_layer_tests/) | cube_test_runner.py | Automated test runner for the Cube (cube |
 
         ### dbt Transformation Layer
 
@@ -41,6 +40,12 @@
         | `profiles.yml` | SQL Server connection profiles — update for your environment |
         | `sources.yml` | Source definitions and freshness checks for all raw `dw.*` tables |
         | `dimensions_schema.yml` | Column descriptions and data tests for all dimension models |
+
+        ### Semantic Layer
+
+        | Folder | Description |
+        |--------|-------------|
+        | [`mlb-semantic-layer`](mlb-semantic-layer/) | Cube (cube.dev) semantic layer over the MLB data warehouse, with `cube_test_runner.py` to test every cube |
 
         ### Web Application
 
@@ -92,6 +97,8 @@
         ETLMonitor.py                    ← pipeline health monitoring + row counts
         lineage_builder.py               ← exports dbt lineage metadata
               │
+              ├──▶ mlb-semantic-layer (Cube) ← measures/dimensions over the warehouse
+              │                                 (tested by cube_test_runner.py)
               ▼
         mlb_app  (FastAPI + React)       ← browses the silver schema in a web UI
         ```
@@ -128,7 +135,12 @@
         cd ../mlb_test_output
         python mlb_test_output.py      # render dbt test report
 
-        # ── 5. Browse the data (web app) ─────────────────────────────
+        # ── 5. Test the semantic layer (Cube must be running) ────────
+        cd ../mlb-semantic-layer
+        pip install -r requirements.txt
+        python cube_test_runner.py --cubes-dir model\cubes --env-file .env
+
+        # ── 6. Browse the data (web app) ─────────────────────────────
         cd ../mlb_app
         pip install -r requirements.txt
         uvicorn main:app --reload --port 8000
@@ -145,6 +157,7 @@
         - dlt — `pip install dlt[mssql]`
         - dbt-sqlserver — `pip install dbt-sqlserver`
         - dbt-utils — installed automatically via `dbt deps` from `packages.yml`
+        - Cube (cube.dev) — for the semantic layer; see `mlb-semantic-layer/README.md`
 
         ## Configuration
 
@@ -167,6 +180,7 @@
         ├── mlb_latestgame_agent/         # Latest game check + incremental trigger
         ├── mlb_test_output/              # dbt test result reporter
         ├── ETLMonitor/                   # ETL health monitor
+        ├── mlb-semantic-layer/           # Cube semantic layer + cube_test_runner.py
         ├── mlb_app/                      # FastAPI + React web app for browsing the warehouse
         ├── dbt_baseball/                 # dbt project
         │   ├── models/
@@ -189,4 +203,4 @@
         ```
 
         ---
-        *Generated 2026-10-27*
+        *Generated 2026-11-03*

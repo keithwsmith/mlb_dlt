@@ -1,0 +1,110 @@
+cubes:
+  - name: dim_date
+    sql_table: silver.dim_date
+    data_source: default
+    title: "Date"
+    description: "Calendar date dimension (1960-2050, one row per day), extended with baseball-specific season-phase flags joined from dw.seasons."
+    joins:
+      - name: dim_season
+        sql: "{CUBE}.baseball_season = {dim_season.season}"
+        relationship: many_to_one
+    dimensions:
+      - name: date_key
+        sql: date_key
+        type: number
+        primary_key: true
+        public: false
+      - name: date_actual
+        sql: date_actual
+        type: time
+        title: "Date"
+      - name: year
+        sql: year
+        type: number
+      - name: quarter
+        sql: quarter
+        type: number
+      - name: month_number
+        sql: month_number
+        type: number
+        title: "Month"
+      - name: month_name
+        sql: month_name
+        type: string
+      - name: week_of_year
+        sql: week_of_year
+        type: number
+      - name: day_of_year
+        sql: day_of_year
+        type: number
+      - name: day_of_month
+        sql: day_of_month
+        type: number
+      - name: day_of_week
+        sql: day_of_week
+        type: number
+        # 1-7, per SQL Server DATEPART(WEEKDAY, ...) -- verify which day
+        # number = Sunday vs Monday under your DB's DATEFIRST setting
+        # before building any UI that labels these.
+      - name: day_name
+        sql: day_name
+        type: string
+      - name: is_weekend
+        sql: is_weekend
+        type: number
+        title: "Is Weekend?"
+        # 0/1 flag
+      - name: is_holiday
+        sql: is_holiday
+        type: number
+        title: "Is Holiday?"
+        public: false
+        # Hardcoded to 0 for every row in the current model ("Can be
+        # enhanced with holiday table" per the SQL comment) -- not yet
+        # useful for filtering. Un-hide once the model actually
+        # populates this.
+      - name: baseball_season
+        sql: baseball_season
+        type: number
+        title: "Season"
+      - name: is_spring_training
+        sql: is_spring_training
+        type: number
+        title: "Is Spring Training?"
+      - name: is_regular_season
+        sql: is_regular_season
+        type: number
+        title: "Is Regular Season?"
+      - name: is_postseason
+        sql: is_postseason
+        type: number
+        title: "Is Postseason?"
+      - name: is_all_star
+        sql: is_all_star
+        type: number
+        title: "Is All-Star Date?"
+      - name: created_at
+        sql: created_at
+        type: time
+        public: false
+        # ETL row-creation timestamp for this dim table itself (GETDATE()
+        # at dbt run time) -- not a calendar attribute of the date_actual
+        # row. Hidden from the query-building UI; kept for lineage only.
+      - name: updated_at
+        sql: updated_at
+        type: time
+        public: false
+        # Same caveat as created_at -- also worth noting this model is
+        # materialized='table' (full rebuild each run), so created_at
+        # and updated_at will be identical/reset on every run rather
+        # than reflecting genuine first-seen vs last-touched history.
+    measures:
+      - name: count
+        type: count
+        title: "Number of Dates"
+    pre_aggregations:
+      # Deliberately left empty. A date dimension is almost always
+      # joined INTO fact-table pre-aggregations (as the time_dimension
+      # or a grouping dimension there) rather than pre-aggregated on its
+      # own -- "count of dates" isn't a meaningful business metric to
+      # cache by itself.

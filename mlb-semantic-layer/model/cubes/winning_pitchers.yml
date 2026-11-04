@@ -1,0 +1,8 @@
+# Extends dim_player under a distinct cube name so dim_game_details can
+# join winning_pitcher_id, losing_pitcher_id, and save_pitcher_id as
+# three independent roles, without violating Cube's one-join-per-target-
+# cube rule. See losing_pitchers.yml and save_pitchers.yml for the other
+# two roles.
+cubes:
+  - name: winning_pitchers
+    extends: dim_player

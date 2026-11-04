@@ -1,0 +1,214 @@
+cubes:
+  - name: vw_batting_stats
+    sql_table: dw.vw_batting_stats
+    data_source: default
+    title: "Batting Stats (Season View)"
+    description: "One row per player/season/team batting line. Rebuilt to match the rewritten vw_batting_stats.sql (now sourced from silver.fact_player_stats + dim_player/dim_team, not the raw dw.player_stats schema-drift COALESCE logic) -- this cube previously reflected the OLD view's columns (player__first_name/last_name, sport__abbreviation, etc.), which no longer exist."
+
+    joins:
+      - name: dim_teams
+        # Compound join -- dim_teams' real unique key is (team_id, season).
+        # Season is now available in this view (it wasn't exposed in the
+        # cube before), so this can be a proper compound join.
+        # FIX: {CUBE}.team_id referenced a column that doesn't exist on
+        # this view -- the underlying dw.vw_batting_stats column is
+        # actually team__id (double underscore, same denormalized naming
+        # as the team_id dimension's own `sql: team__id` below). The old
+        # join SQL was a raw column reference, not a dimension reference,
+        # so it didn't pick that up automatically and SQL Server rejected
+        # it with "Invalid column name 'team_id'".
+        sql: "{CUBE}.team__id = {dim_teams.team_id} AND {CUBE}.season = {dim_teams.season}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: player_id
+        sql: player__id
+        type: number
+        primary_key: true
+
+      - name: season
+        sql: season
+        type: number
+        primary_key: true
+
+      - name: team_id
+        sql: team__id
+        type: number
+        primary_key: true
+
+      - name: player_full_name
+        sql: player__full_name
+        type: string
+        title: "Player"
+
+      - name: team_name
+        sql: team__name
+        type: string
+        title: "Team"
+
+      - name: league_id
+        sql: league__id
+        type: number
+        public: false
+
+      - name: league_name
+        sql: league__name
+        type: string
+        title: "League"
+
+      - name: sport_id
+        sql: sport__id
+        type: number
+        public: false
+
+      - name: sport_name
+        sql: sport_name
+        type: string
+        title: "Sport"
+
+      - name: position_code
+        sql: position_code
+        type: string
+        title: "Position"
+
+      - name: age
+        sql: age
+        type: number
+
+      - name: games_played
+        sql: games_played
+        type: number
+        public: false
+
+      - name: at_bats
+        sql: at_bats
+        type: number
+        public: false
+
+      - name: runs
+        sql: runs
+        type: number
+        public: false
+
+      - name: hits
+        sql: hits
+        type: number
+        public: false
+
+      - name: doubles
+        sql: doubles
+        type: number
+        public: false
+
+      - name: triples
+        sql: triples
+        type: number
+        public: false
+
+      - name: home_runs
+        sql: home_runs
+        type: number
+        public: false
+
+      - name: rbi
+        sql: rbi
+        type: number
+        public: false
+
+      - name: stolen_bases
+        sql: stolen_bases
+        type: number
+        public: false
+
+      - name: caught_stealing
+        sql: caught_stealing
+        type: number
+        public: false
+
+      - name: stolen_base_pct
+        sql: stolen_base_pct
+        type: number
+        title: "Stolen Base %"
+        # Retyped from string -> number -- computed as a real FLOAT in
+        # the rewritten view.
+
+      - name: walks
+        sql: walks
+        type: number
+        public: false
+
+      - name: strikeouts
+        sql: strikeouts
+        type: number
+        public: false
+
+      - name: avg
+        sql: avg
+        type: number
+        title: "AVG"
+
+      - name: obp
+        sql: obp
+        type: number
+        title: "OBP"
+
+      - name: slg
+        sql: slg
+        type: number
+        title: "SLG"
+
+      - name: ops
+        sql: ops
+        type: number
+        title: "OPS"
+
+      - name: ab_per_hr
+        sql: ab_per_hr
+        type: number
+        title: "AB per HR"
+        # Retyped from string -> number, same reasoning as stolen_base_pct.
+
+      - name: dlt_load_id
+        sql: _dlt_load_id
+        type: string
+        public: false
+
+      - name: dlt_id
+        sql: _dlt_id
+        type: string
+        public: false
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Player-Seasons"
+
+      - name: distinct_players
+        sql: player_id
+        type: count_distinct
+        title: "Distinct Players"
+
+      - name: total_home_runs
+        sql: home_runs
+        type: sum
+        title: "Total Home Runs"
+
+      - name: total_hits
+        sql: hits
+        type: sum
+        title: "Total Hits"
+
+      - name: total_rbi
+        sql: rbi
+        type: sum
+        title: "Total RBI"
+
+      - name: avg_ops
+        sql: ops
+        type: avg
+        title: "Average OPS"
+        # CAVEAT: unweighted average across player-seasons, not
+        # plate-appearance-weighted.
+
+    pre_aggregations:
+      # Deliberately left empty pending a concrete query pattern to match.

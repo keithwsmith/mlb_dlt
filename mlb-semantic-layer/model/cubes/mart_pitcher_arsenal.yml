@@ -1,0 +1,32 @@
+cubes:
+  - name: mart_pitcher_arsenal
+    sql_table: silver.mart_pitcher_arsenal
+    data_source: default
+
+    joins: []
+
+    dimensions:
+      - name: load_id
+        sql: load_id
+        type: string
+
+      - name: pitch_category
+        sql: pitch_category
+        type: string
+
+      - name: pitch_type_code
+        sql: pitch_type_code
+        type: string
+
+      - name: pitch_type_description
+        sql: pitch_type_description
+        type: string
+
+    measures:
+      - name: count
+        type: count
+
+    pre_aggregations:
+      # Pre-aggregation definitions go here.
+      # Learn more in the documentation: https://cube.dev/docs/caching/pre-aggregations/getting-started
+

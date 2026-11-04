@@ -1,0 +1,84 @@
+cubes:
+  - name: int_team_game_results
+    sql_table: silver.int_team_game_results
+    data_source: default
+
+    joins:
+      - name: dim_teams
+        # FAN-OUT RISK: no season column currently exposed to complete
+        # dim_teams' real (team_id, season) compound key. Unreviewed
+        # auto-scaffold overall -- needs a proper pass.
+        sql: "{CUBE}.team_id = {dim_teams.team_id}"
+        relationship: many_to_one
+
+      - name: dim_venue
+        # FIX: confirmed via INFORMATION_SCHEMA.COLUMNS that dim_venue's
+        # venue_key is a generated hash (varchar), separate from the real
+        # venue_id (int). Joining {CUBE}.venue_id (numeric) to
+        # {dim_venue.venue_key} (hash) threw "Error converting data type
+        # varchar to bigint". dim_venue.yml now exposes the real venue_id;
+        # join to that instead.
+        sql: "{CUBE}.venue_id = {dim_venue.venue_id}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: game_pk
+        sql: game_pk
+        type: number
+        primary_key: true
+        # Added back -- was missing entirely. This model's real grain is
+        # (game_pk, team_id), confirmed from dim_team_standings (which is
+        # built directly from this model with that same composite key).
+
+      - name: team_id
+        sql: team_id
+        type: number
+        primary_key: true
+
+      - name: day_night
+        sql: day_night
+        type: string
+
+      - name: double_header
+        sql: double_header
+        type: string
+
+      - name: game_type_desc
+        sql: game_type_desc
+        type: string
+
+      - name: opponent_team_name
+        sql: opponent_team_name
+        type: string
+
+      - name: result
+        sql: result
+        type: string
+
+      - name: team_name
+        sql: team_name
+        type: string
+
+      - name: game_date
+        sql: game_date
+        type: time
+
+      - name: game_datetime
+        sql: game_datetime
+        type: time
+
+      - name: series_game_number
+        sql: series_game_number
+        type: number
+        title: "Game # in Series"
+
+    measures:
+      - name: count
+        type: count
+
+
+
+    pre_aggregations:
+      # Pre-aggregation definitions go here.
+      # Learn more in the documentation: https://cube.dev/docs/caching/pre-aggregations/getting-started
+

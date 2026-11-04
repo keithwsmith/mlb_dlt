@@ -1,0 +1,51 @@
+version: '2.2'
+
+services:
+  cube:
+    image: cubejs/cube:v1.4.4
+    ports:
+      # It's better to use random port binding for 4000/3000 ports
+      # without it you will not able to start multiple projects inside docker
+      - 4000:4000  # Cube API and Developer Playground
+      - 3000:3000  # Dashboard app, if created
+    env_file: .env
+    environment:
+      # ADDED: point cube at the dedicated cubestore service below instead
+      # of running Cube Store embedded inside this container. Embedded
+      # Cube Store defaults to writing its local storage into the bind-
+      # mounted project folder (".:/cube/conf" below) -- which is a
+      # Windows-hosted directory even though the container itself is
+      # Linux, so Docker Desktop's Windows<->Linux bind-mount translation
+      # was still breaking Cube Store's atomic rename/hard-link storage
+      # operations (the exact "can't be listed in remote_fs" signature).
+      # A separate cubestore service backed by a named Docker volume
+      # (not a bind mount) keeps its storage on a real Linux filesystem
+      # the whole time.
+      - CUBEJS_CUBESTORE_HOST=cubestore
+      - CUBEJS_CUBESTORE_PORT=3030
+    volumes:
+      - .:/cube/conf
+      # We ignore Cube deps, because they are built-in inside the official Docker image
+      - .empty:/cube/conf/node_modules/@cubejs-backend/
+    depends_on:
+      - cubestore
+
+  cubestore:
+    # ADDED: dedicated Cube Store service. Version pinned to match the
+    # cube image above -- VERIFY cubejs/cubestore:v1.4.4 actually exists
+    # on Docker Hub before relying on this; if that exact tag isn't
+    # published, use :latest here (mismatched cube/cubestore versions are
+    # usually fine within the same major line, but matching is safest).
+    image: cubejs/cubestore:v1.4.4
+    environment:
+      - CUBESTORE_SERVER_NAME=cubestore:3030
+    volumes:
+      # NAMED VOLUME, not a bind mount to the Windows-hosted project
+      # folder -- this is the actual fix. Docker manages this volume's
+      # storage on a real Linux filesystem regardless of the host OS.
+      - cubestore_data:/cube/data
+    ports:
+      - 3030:3030
+
+volumes:
+  cubestore_data:

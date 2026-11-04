@@ -1,0 +1,142 @@
+cubes:
+  - name: dim_teams
+    sql_table: silver.dim_teams
+    data_source: default
+    title: "Team"
+    description: "One row per team per season (a team's division/league/etc. can change year to year). Real unique key is (team_id, season) via team_key -- consumers joining to this cube need BOTH columns, not team_id alone, or they'll fan out."
+
+    joins:
+      - name: dim_venue
+        # FIX: confirmed via INFORMATION_SCHEMA.COLUMNS that dim_venue's
+        # venue_key is a generated hash (varchar), separate from the real
+        # venue_id (int) -- joining {CUBE}.venue_id (numeric) to
+        # {dim_venue.venue_key} (hash) threw "Error converting data type
+        # varchar to bigint". dim_venue.yml now exposes the real venue_id;
+        # join to that instead.
+        sql: "{CUBE}.venue_id = {dim_venue.venue_id}"
+        relationship: many_to_one
+      # Previous version had a self-referential join here
+      # ({CUBE}.team_id = {teams.id}) -- removed. dim_teams IS the teams
+      # data; there's no separate "teams" cube to join to.
+
+    dimensions:
+      - name: team_key
+        sql: team_key
+        type: string
+        primary_key: true
+        public: false
+
+      - name: team_id
+        sql: team_id
+        type: number
+        title: "Team ID"
+
+      - name: season
+        sql: season
+        type: number
+        title: "Season"
+
+      - name: team_name
+        sql: team_name
+        type: string
+        title: "Team"
+
+      - name: team_code
+        sql: team_code
+        type: string
+        public: false
+
+      - name: file_code
+        sql: file_code
+        type: string
+        public: false
+
+      - name: abbreviation
+        sql: abbreviation
+        type: string
+        title: "Abbreviation"
+
+      - name: location_name
+        sql: location_name
+        type: string
+        title: "Location"
+
+      - name: franchise_name
+        sql: franchise_name
+        type: string
+        title: "Franchise"
+
+      - name: club_name
+        sql: club_name
+        type: string
+        public: false
+
+      - name: short_name
+        sql: short_name
+        type: string
+        public: false
+
+      - name: league_name
+        sql: league_name
+        type: string
+        title: "League"
+
+      - name: division_name
+        sql: division_name
+        type: string
+        title: "Division"
+
+      - name: sport_name
+        sql: sport_name
+        type: string
+        title: "Sport"
+
+      - name: spring_league_name
+        sql: spring_league_name
+        type: string
+        title: "Spring League"
+
+      - name: spring_league_abbreviation
+        sql: spring_league_abbreviation
+        type: string
+        public: false
+
+      - name: all_star_status
+        sql: all_star_status
+        type: string
+        public: false
+        # Type/meaning not confirmed -- verify actual values.
+
+      - name: is_active
+        sql: is_active
+        type: number
+        title: "Is Active?"
+        # Retyped from string -> number (0/1 flag, matching this
+        # project's convention) -- verify actual stored values.
+
+      - name: created_at
+        sql: created_at
+        type: time
+        public: false
+
+      - name: updated_at
+        sql: updated_at
+        type: time
+        public: false
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Team-Seasons"
+        # NOTE: counts one row per team PER SEASON -- a team active across
+        # 10 seasons contributes 10 to a plain count(). Use distinct_teams
+        # below for "how many teams" questions.
+
+      - name: distinct_teams
+        sql: team_id
+        type: count_distinct
+        title: "Distinct Teams"
+
+    pre_aggregations:
+      # Deliberately left empty -- small reference/lookup table (one row
+      # per team per season), not a good pre-aggregation candidate.

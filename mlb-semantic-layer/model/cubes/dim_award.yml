@@ -1,0 +1,35 @@
+cubes:
+  - name: dim_award
+    sql_table: silver.dim_award
+    data_source: default
+    title: "Award"
+    description: "Reference dimension of distinct MLB awards."
+
+    joins: []
+
+    dimensions:
+      - name: award_id
+        sql: award_id
+        type: string
+        title: "Award ID"
+
+      - name: award_key
+        sql: award_key
+        type: string
+        primary_key: true
+        public: false
+
+      - name: award_name
+        sql: award_name
+        type: string
+        title: "Award Name"
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Awards"
+
+    pre_aggregations:
+      # Pre-aggregation definitions go here.
+      # Learn more in the documentation: https://cube.dev/docs/caching/pre-aggregations/getting-started
+

@@ -1,0 +1,127 @@
+cubes:
+  - name: dim_challenges
+    sql_table: silver.dim_challenges
+    data_source: default
+    title: "Instant Replay Challenges"
+    description: "One row per reviewed play (has_review = 1 by construction -- every row here already passed a challenge/review). NOT every play in a game, only ones that were actually reviewed."
+
+    joins:
+      - name: dim_games
+        sql: "{CUBE}.game_pk = {dim_games.game_pk}"
+        relationship: many_to_one
+
+      - name: dim_teams
+        # FAN-OUT RISK: dim_teams' real unique key is (team_id, season),
+        # but this cube has no season/date-derived-season column exposed
+        # to complete that compound condition. As written this will match
+        # every season that review_challenge_team_id has a dim_teams row
+        # for. Needs a season column added here to fix properly.
+        sql: "{CUBE}.review_challenge_team_id = {dim_teams.team_id}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: challenge_key
+        sql: challenge_key
+        type: string
+        primary_key: true
+        public: false
+
+      - name: game_pk
+        sql: game_pk
+        type: number
+
+      - name: event_id
+        sql: event_id
+        type: string
+        public: false
+
+      - name: start_time
+        sql: start_time
+        type: time
+
+      - name: review_challenge_team_id
+        sql: review_challenge_team_id
+        type: number
+        public: false
+
+      - name: review_player_id
+        sql: review_player_id
+        type: number
+        public: false
+
+      - name: review_player_name
+        sql: review_player_name
+        type: string
+        title: "Player Reviewed"
+
+      - name: review_player_link
+        sql: review_player_link
+        type: string
+        public: false
+
+      - name: review_type
+        sql: review_type
+        type: string
+        title: "Review Type"
+
+      - name: review_is_overturned
+        sql: review_is_overturned
+        type: string
+        title: "Overturned?"
+        # NOTE: verify actual stored values (1/0, 'Y'/'N', true/false, etc.)
+        # against the real column -- overturned_count/overturn_rate below
+        # assume a 1/0-style numeric flag, matching has_review's pattern.
+        # Adjust the filter SQL in those measures if the real encoding
+        # differs.
+
+      - name: has_review
+        sql: has_review
+        type: string
+        public: false
+        # Always 1 for every row in this table by construction (the dbt
+        # model filters WHERE has_review = 1) -- not useful for
+        # filtering/grouping within this cube, kept only for lineage/
+        # debugging visibility into the source condition.
+
+      - name: load_id
+        sql: load_id
+        type: string
+        public: false
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Reviewed Challenges"
+
+      - name: overturned_count
+        type: count
+        title: "Number Overturned"
+        filters:
+          - sql: "{CUBE}.review_is_overturned = 1"
+
+      - name: overturn_rate
+        type: number
+        title: "Overturn Rate"
+        sql: "1.0 * {overturned_count} / NULLIF({count}, 0)"
+        format: percent
+
+      - name: distinct_teams_challenging
+        sql: review_challenge_team_id
+        type: count_distinct
+        title: "Distinct Teams Challenging"
+
+      - name: distinct_players_reviewed
+        sql: review_player_id
+        type: count_distinct
+        title: "Distinct Players Reviewed"
+
+    pre_aggregations:
+      - name: main
+        measures:
+          - CUBE.count
+          - CUBE.overturned_count
+        dimensions:
+          - CUBE.review_type
+        time_dimension: CUBE.start_time
+        granularity: month
+        partition_granularity: year

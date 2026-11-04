@@ -1,0 +1,32 @@
+cubes:
+  - name: dim_velocity_range
+    sql_table: silver.dim_velocity_range
+    data_source: default
+
+    joins: []
+
+    dimensions:
+      - name: range_description
+        sql: range_description
+        type: string
+
+      - name: velocity_category
+        sql: velocity_category
+        type: string
+
+      - name: created_at
+        sql: created_at
+        type: time
+
+      - name: updated_at
+        sql: updated_at
+        type: time
+
+    measures:
+      - name: count
+        type: count
+
+    pre_aggregations:
+      # Pre-aggregation definitions go here.
+      # Learn more in the documentation: https://cube.dev/docs/caching/pre-aggregations/getting-started
+

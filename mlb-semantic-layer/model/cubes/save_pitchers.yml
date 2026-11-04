@@ -1,0 +1,6 @@
+# Extends dim_player under a distinct cube name -- see winning_pitchers.yml
+# for the full explanation. This is the "save pitcher" role for
+# dim_game_details.
+cubes:
+  - name: save_pitchers
+    extends: dim_player

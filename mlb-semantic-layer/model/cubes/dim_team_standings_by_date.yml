@@ -1,0 +1,154 @@
+cubes:
+  - name: dim_team_standings_by_date
+    sql_table: silver.dim_team_standings_by_date
+    data_source: default
+    title: "Team Standings by Date"
+    description: "One row per team per game_date -- end-of-day standings, i.e. the team's cumulative record as of that date WITHIN THAT SEASON (running total, ordered by date, reset every season). If a team plays a doubleheader, both games share the same game_date and are collapsed into one row -- the daily wins/losses/ties reflect both games combined, and the *_to_date running totals reflect the team's record at the END of that date. Real unique key is (team_id, season, game_date), confirmed against the table DDL -- prior version of this cube only exposed team_name/game_date and used team_name as a string primary key, which was both incomplete and wrong (team_name isn't even unique on its own, let alone a stable key)."
+
+    joins:
+      - name: dim_teams
+        # Compound join -- dim_teams' real unique key is (team_id, season),
+        # same reasoning as every other join to it in this project. season
+        # is now exposed on this cube (it was missing before, which is why
+        # this join previously had to leave the FAN-OUT RISK note and join
+        # on team_id alone).
+        sql: "{CUBE}.team_id = {dim_teams.team_id} AND {CUBE}.season = {dim_teams.season}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: team_id
+        sql: team_id
+        type: number
+        primary_key: true
+        public: false
+
+      - name: season
+        sql: season
+        type: number
+        primary_key: true
+        title: "Season"
+
+      - name: game_date
+        sql: game_date
+        type: time
+        primary_key: true
+        title: "Date"
+
+      - name: team_name
+        sql: team_name
+        type: string
+        title: "Team"
+
+      # ── Daily (this date only) -- safe to SUM across dates ──────────
+      - name: games_played
+        sql: games_played
+        type: number
+        public: false
+
+      - name: wins
+        sql: wins
+        type: number
+        public: false
+
+      - name: losses
+        sql: losses
+        type: number
+        public: false
+
+      - name: ties
+        sql: ties
+        type: number
+        public: false
+
+      # ── Cumulative-to-date (running total as of this date, reset each
+      #    season) -- NEVER sum these across dates, that double-counts.
+      #    Use MAX grouped by team/season instead -- see measures below. ──
+      - name: games_played_to_date
+        sql: games_played_to_date
+        type: number
+        public: false
+
+      - name: wins_to_date
+        sql: wins_to_date
+        type: number
+        public: false
+
+      - name: losses_to_date
+        sql: losses_to_date
+        type: number
+        public: false
+
+      - name: ties_to_date
+        sql: ties_to_date
+        type: number
+        public: false
+
+    measures:
+      - name: count
+        type: count
+        title: "Team-Days"
+
+      # ── Daily totals -- these sum safely across dates/teams/seasons ──
+      - name: total_games_played
+        sql: games_played
+        type: sum
+        title: "Total Games Played (Daily)"
+
+      - name: total_wins
+        sql: wins
+        type: sum
+        title: "Total Wins (Daily)"
+
+      - name: total_losses
+        sql: losses
+        type: sum
+        title: "Total Losses (Daily)"
+
+      - name: total_ties
+        sql: ties
+        type: sum
+        title: "Total Ties (Daily)"
+
+      - name: daily_win_pct
+        type: number
+        title: "Win % (Daily)"
+        sql: "1.0 * {total_wins} / NULLIF({total_games_played}, 0)"
+        format: percent
+
+      # ── Season-to-date snapshot -- MAX, not SUM. Each row's *_to_date
+      #    column already holds a running cumulative total, so MAX grouped
+      #    by team/season returns that team's final total for the season
+      #    (or as of the latest date in the current filter/date range).
+      #    Summing these across dates would multiply-count every prior day. ──
+      - name: games_played_season_to_date
+        sql: games_played_to_date
+        type: max
+        title: "Games Played (Season-to-Date)"
+
+      - name: wins_season_to_date
+        sql: wins_to_date
+        type: max
+        title: "Wins (Season-to-Date)"
+
+      - name: losses_season_to_date
+        sql: losses_to_date
+        type: max
+        title: "Losses (Season-to-Date)"
+
+      - name: ties_season_to_date
+        sql: ties_to_date
+        type: max
+        title: "Ties (Season-to-Date)"
+
+      - name: win_pct_season_to_date
+        type: number
+        title: "Win % (Season-to-Date)"
+        sql: "1.0 * {wins_season_to_date} / NULLIF({games_played_season_to_date}, 0)"
+        format: percent
+
+    pre_aggregations:
+      # Real fact-shaped table with a genuine game_date column and a
+      # natural (team_id, season) grouping -- good rollup candidate, e.g.
+      # a `main` pre-aggregation keyed by team_id/season with game_date as
+      # the time_dimension, same pattern as dim_team_standings/dim_games.
+      # Left empty for now pending a concrete query pattern to match.

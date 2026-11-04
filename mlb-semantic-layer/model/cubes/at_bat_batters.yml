@@ -1,0 +1,5 @@
+# Extends dim_player under a distinct name -- see credited_pitchers.yml.
+# This is the batter role for fact_at_bats.
+cubes:
+  - name: at_bat_batters
+    extends: dim_player

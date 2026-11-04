@@ -1,0 +1,643 @@
+cubes:
+  - name: dim_player_stats
+    sql_table: silver.dim_player_stats
+    data_source: default
+    title: "Player Game Stats"
+    description: "One row per player per completed game. Countable pitching/fielding/batting stats are raw per-game counts (hidden as dimensions, exposed as sum measures below for aggregation across games). batting_avg_raw/pitching_era_raw are per-game rates as reported -- reference only, never summed."
+
+    joins:
+      - name: dim_teams
+        # Compound join -- dim_teams' real unique key is (team_id, season).
+        sql: "{CUBE}.team_id = {dim_teams.team_id} AND {CUBE}.season = {dim_teams.season}"
+        relationship: many_to_one
+
+      - name: opponent_teams
+        # Extends dim_teams under a distinct name (see opponent_teams.yml)
+        # -- same "extends" pattern already used by dim_team_standings for
+        # the identical role, and by home_teams.yml/away_teams.yml for
+        # dim_games. Was previously listed as a TODO in the comment on
+        # opponent_team_id below ("needs Cube's extends pattern... same
+        # limitation as dim_draft's pitcher roles and dim_games' home/away
+        # teams") -- confirmed dim_teams.yml has real division_name/
+        # league_name fields, so this join is what makes a genuine
+        # "against division opponents" filter possible (division_name
+        # doesn't exist anywhere on this cube's own rows -- it can only
+        # come from joining the opponent's team-season row). Compound key
+        # for the same fan-out reason as the dim_teams join above --
+        # dim_teams' real unique key is (team_id, season), not team_id
+        # alone.
+        sql: "{CUBE}.opponent_team_id = {opponent_teams.team_id} AND {CUBE}.season = {opponent_teams.season}"
+        relationship: many_to_one
+
+      - name: dim_player
+        # Only join to the CURRENT version of the (SCD2) player dimension,
+        # same pattern as dim_draft's join to it.
+        sql: "{CUBE}.player_id = {dim_player.player_id} AND {dim_player.is_current} = 1"
+        relationship: many_to_one
+
+      - name: dim_team_standings
+        # dim_team_standings' grain is one row per TEAM per game (its own
+        # primary key is [game_pk, team_id]), while this cube's grain is
+        # one row per PLAYER per game -- so the join has to include
+        # team_id alongside game_pk, not game_pk alone. Joining on
+        # game_pk only would match both teams' standings rows for that
+        # game (fan-out / duplicate rows), since dim_team_standings has
+        # two rows per game_pk (one per side). Adding team_id pins the
+        # match to this player's own team's row.
+        # many_to_one because many player rows (one per player on a
+        # roster) share the same single (game_pk, team_id) standings row.
+        # This is what makes team-level fields that only live on
+        # dim_team_standings -- e.g. is_interleague, is_doubleheader,
+        # day_night, result -- queryable alongside player_name here.
+        sql: "{CUBE}.game_pk = {dim_team_standings.game_pk} AND {CUBE}.team_id = {dim_team_standings.team_id}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: game_pk
+        sql: game_pk
+        type: number
+        primary_key: true
+        # Composite grain with player_id below -- matches this model's
+        # documented grain in dimensions_schema.yml ([game_pk, player_id]).
+
+      - name: player_id
+        sql: player_id
+        type: number
+        primary_key: true
+
+      - name: season
+        sql: season
+        type: number
+
+      - name: game_type_desc
+        sql: game_type_desc
+        type: string
+        title: "Game Type"
+
+      - name: game_date
+        sql: game_date
+        type: time
+        title: "Game Date"
+
+      - name: game_datetime
+        sql: game_datetime
+        type: time
+        public: false
+
+      - name: player_name
+        sql: player_name
+        type: string
+        title: "Player"
+
+      - name: team_id
+        sql: team_id
+        type: number
+        public: false
+
+      - name: team_name
+        sql: team_name
+        type: string
+        title: "Team"
+
+      - name: opponent_team_id
+        sql: opponent_team_id
+        type: number
+        public: false
+        # Joined via the opponent_teams cube (see joins above) -- use
+        # opponent_teams.division_name/league_name/team_name for anything
+        # about the opponent, not this raw id.
+
+      - name: opponent_team_name
+        sql: opponent_team_name
+        type: string
+        title: "Opponent"
+
+      - name: is_home
+        sql: is_home
+        type: number
+        title: "Is Home Game?"
+        # Retyped from string -> number -- this is the 0/1 flag documented
+        # in dimensions_schema.yml ("1 if player_id's team was the home
+        # team..., 0 if away"), not free text.
+
+      - name: position_code
+        sql: position_code
+        type: string
+        public: false
+
+      - name: position_name
+        sql: position_name
+        type: string
+        title: "Position"
+
+      - name: position_abbreviation
+        sql: position_abbreviation
+        type: string
+        title: "Pos."
+
+      - name: start_hour
+        sql: start_hour
+        type: number
+        title: "Start Hour"
+
+      - name: is_division_game
+        sql: "CASE WHEN {dim_teams.division_name} = {opponent_teams.division_name} THEN 1 ELSE 0 END"
+        type: number
+        title: "Is Division Game?"
+        description: "1 if this row's own team (via the dim_teams join) and its opponent (via opponent_teams) share the same division for this season, else 0. Added so 'against their own division's opponents' / 'division rivals' questions have a per-row flag to filter on -- Cube's JSON query filters can only compare a member to a literal value, not to another member, so 'their own division' (which is different for every player/team) can't be expressed as a hardcoded division_name/league_name literal. Same role for division-matchup questions that is_interleague plays for league-matchup questions. Filter is_division_game = 1, no division_name/league_name literal needed on either side."
+
+      # UNVERIFIED -- added 2026-09-12, CONFIRM the sub_query:true key name
+      # and behavior against a real Cube deployment (get_schema/Playground)
+      # before relying on this in production; the shape below is Cube's
+      # documented pattern for exactly this problem but hasn't been proven
+      # against this schema yet.
+      #
+      # WHY THIS EXISTS: "which team had the most players with at least 20
+      # home runs in 2025?" needs a TWO-LEVEL aggregation -- first sum each
+      # player's home runs for the season, THEN count how many of those
+      # per-player sums cross the threshold, grouped by team. A single flat
+      # Cube JSON query can only aggregate once per query (see
+      # THRESHOLD_COUNT_MISSING_PLAYER_GRAIN/THRESHOLD_COUNT_WRONG_MEASURE
+      # in PLAYER_STATS_JSON_VALIDATORS -- even the "fixed" shape those
+      # validators asked for, [team_name, player_name] dimensions, still
+      # can't roll back up to a per-team COUNT of qualifying players in the
+      # same query, it only ever gets you the same 3 exhausted retries seen
+      # in results_20260911_183754.json). A sub-query dimension is Cube's
+      # own documented mechanism for this exact shape: it computes
+      # total_batting_home_runs at PLAYER grain first (as if that were a
+      # one-to-one dimension on this row), so a query grouped by team_name
+      # alone can then filter/count on it without double-aggregating.
+      - name: player_season_home_runs
+        sql: "{total_batting_home_runs}"
+        type: number
+        sub_query: true
+        description: "Each player's season home-run total, exposed as a per-row value via a Cube sub-query so it can be filtered/counted from a query grouped by team_name alone (see the comment above). Worked example -- 'which team had the most players with at least 20 home runs in 2025?': dimensions=[dim_player_stats.team_name], measures=[dim_player_stats.distinct_players], filters=[season=2025, player_season_home_runs operator gte values ['20']], order by distinct_players desc, limit 1. Only covers home runs -- add a parallel sub-query dimension (e.g. player_season_rbi) if the same threshold-count shape is needed for another counting stat; this one field does not generalize to other measures on its own."
+
+      # ── Raw per-game stats (hidden -- see sum measures below) ──────
+      - name: pitching_outs_recorded
+        sql: pitching_outs_recorded
+        type: number
+        public: false
+
+      - name: pitching_hits_allowed
+        sql: pitching_hits_allowed
+        type: number
+        public: false
+
+      - name: pitching_runs_allowed
+        sql: pitching_runs_allowed
+        type: number
+        public: false
+
+      - name: pitching_earned_runs
+        sql: pitching_earned_runs
+        type: number
+        public: false
+
+      - name: pitching_walks
+        sql: pitching_walks
+        type: number
+        public: false
+
+      - name: pitching_strikeouts
+        sql: pitching_strikeouts
+        type: number
+        public: false
+
+      - name: pitching_home_runs_allowed
+        sql: pitching_home_runs_allowed
+        type: number
+        public: false
+
+      - name: fielding_putouts
+        sql: fielding_putouts
+        type: number
+        public: false
+
+      - name: fielding_assists
+        sql: fielding_assists
+        type: number
+        public: false
+
+      - name: fielding_errors
+        sql: fielding_errors
+        type: number
+        public: false
+
+      - name: fielding_chances
+        sql: fielding_chances
+        type: number
+        public: false
+
+      - name: batting_at_bats
+        sql: batting_at_bats
+        type: number
+        public: false
+
+      - name: batting_runs
+        sql: batting_runs
+        type: number
+        public: false
+
+      - name: batting_hits
+        sql: batting_hits
+        type: number
+        public: false
+
+      - name: batting_doubles
+        sql: batting_doubles
+        type: number
+        public: false
+
+      - name: batting_triples
+        sql: batting_triples
+        type: number
+        public: false
+
+      - name: batting_home_runs
+        sql: batting_home_runs
+        type: number
+        public: false
+
+      - name: batting_rbi
+        sql: batting_rbi
+        type: number
+        public: false
+
+      - name: batting_walks
+        sql: batting_walks
+        type: number
+        public: false
+
+      - name: batting_strikeouts
+        sql: batting_strikeouts
+        type: number
+        public: false
+
+      - name: batting_stolen_bases
+        sql: batting_stolen_bases
+        type: number
+        public: false
+
+      - name: batting_left_on_base
+        sql: batting_left_on_base
+        type: number
+        public: false
+
+      - name: batting_avg_raw
+        sql: batting_avg_raw
+        type: string
+        public: false
+        title: "Batting Avg (this game, raw)"
+        # Reference only -- never sum this. See dim_player_stats_by_date
+        # for a correctly derived cumulative average.
+
+      - name: pitching_era_raw
+        sql: pitching_era_raw
+        type: string
+        public: false
+        title: "ERA (this game, raw)"
+        # Reference only -- never sum this. See dim_player_stats_by_date
+        # for a correctly derived cumulative ERA.
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Player-Games"
+
+      - name: distinct_players
+        sql: player_id
+        type: count_distinct
+        title: "Distinct Players"
+
+      - name: distinct_positions
+        sql: position_name
+        type: count_distinct
+        title: "Distinct Positions Played"
+        description: "Count of DISTINCT position_name values for the player_name in dimensions/filters -- for 'which player appeared at the most distinct positions' questions. Not the same as distinct_players (a headcount of players): dimensions=[player_name], measures=[distinct_positions], order by distinct_positions desc, limit 1 is the correct shape -- ordering by distinct_players instead just returns whichever player_name sorts first among players with count=1 (every named player is trivially '1 distinct player'), which is a different, meaningless number for this question."
+
+      # ── Pitching totals ─────────────────────────────────────────
+      - name: total_pitching_outs_recorded
+        sql: pitching_outs_recorded
+        type: sum
+        title: "Total Outs Recorded"
+
+      - name: total_pitching_hits_allowed
+        sql: pitching_hits_allowed
+        type: sum
+        title: "Total Hits Allowed"
+
+      - name: total_pitching_runs_allowed
+        sql: pitching_runs_allowed
+        type: sum
+        title: "Total Runs Allowed"
+
+      - name: total_pitching_earned_runs
+        sql: pitching_earned_runs
+        type: sum
+        title: "Total Earned Runs Allowed"
+
+      - name: total_pitching_walks
+        sql: pitching_walks
+        type: sum
+        title: "Total Pitching Walks"
+
+      - name: total_pitching_strikeouts
+        sql: pitching_strikeouts
+        type: sum
+        title: "Total Pitching Strikeouts"
+
+      - name: total_pitching_home_runs_allowed
+        sql: pitching_home_runs_allowed
+        type: sum
+        title: "Total Home Runs Allowed"
+
+      # ── Fielding totals ─────────────────────────────────────────
+      - name: total_fielding_putouts
+        sql: fielding_putouts
+        type: sum
+        title: "Total Putouts"
+
+      - name: total_fielding_assists
+        sql: fielding_assists
+        type: sum
+        title: "Total Assists"
+
+      - name: total_fielding_errors
+        sql: fielding_errors
+        type: sum
+        title: "Total Errors"
+
+      - name: total_fielding_chances
+        sql: fielding_chances
+        type: sum
+        title: "Total Fielding Chances"
+
+      # ── Batting totals ──────────────────────────────────────────
+      - name: total_batting_at_bats
+        sql: batting_at_bats
+        type: sum
+        title: "Total At-Bats"
+
+      - name: total_batting_runs
+        sql: batting_runs
+        type: sum
+        title: "Total Runs"
+
+      - name: total_batting_hits
+        sql: batting_hits
+        type: sum
+        title: "Total Hits"
+
+      - name: total_batting_doubles
+        sql: batting_doubles
+        type: sum
+        title: "Total Doubles"
+
+      - name: total_batting_triples
+        sql: batting_triples
+        type: sum
+        title: "Total Triples"
+
+      - name: total_batting_home_runs
+        sql: batting_home_runs
+        type: sum
+        title: "Total Home Runs"
+
+      - name: total_batting_rbi
+        sql: batting_rbi
+        type: sum
+        title: "Total RBI"
+
+      - name: total_batting_walks
+        sql: batting_walks
+        type: sum
+        title: "Total Walks"
+
+      - name: total_batting_strikeouts
+        sql: batting_strikeouts
+        type: sum
+        title: "Total Strikeouts"
+
+      - name: total_batting_stolen_bases
+        sql: batting_stolen_bases
+        type: sum
+        title: "Total Stolen Bases"
+
+      - name: total_batting_left_on_base
+        sql: batting_left_on_base
+        type: sum
+        title: "Total Left On Base"
+
+      # ── Calculated rate stats ───────────────────────────────────
+      - name: total_batting_avg
+        title: "Batting Average"
+        type: number
+        # Calculated measure (references other measures, not a raw
+        # column) -- Cube computes this AFTER total_batting_hits/
+        # total_batting_at_bats are aggregated to whatever grain the
+        # query asks for (season, month, per-game, vs.-opponent, etc.),
+        # so it's automatically correct at any grouping this cube
+        # supports, including month-by-month via the game_date time
+        # dimension at "month" granularity -- no separate per-grain
+        # field needed.
+        #
+        # Deliberately NOT built from batting_avg_raw: that field is a
+        # per-game reference string (see its own comment above) and
+        # summing/averaging it across games would be wrong -- hits/
+        # at-bats on the aggregated totals is the only correct way to
+        # get a multi-game batting average.
+        #
+        # NULLIF guards the zero-at-bats case (e.g. a pitcher with no
+        # plate appearances, or a filter set with no qualifying games)
+        # so the result comes back NULL instead of erroring or
+        # returning a fake 0 -- "no at-bats to compute a rate from" is
+        # a different answer than "batted .000".
+        #
+        # CONFIRMED BUG (2026-09-07): the original version of this cast
+        # -- CAST(... AS DECIMAL(10,3)) -- fails on every single query
+        # that touches this measure with CUBE_QUERY_REJECTED (400):
+        # "Internal: This feature is not implemented: Unsupported SQL
+        # type Decimal(Some(10), Some(3))". That's Cube Store's own SQL
+        # engine (the DataFusion-based engine that serves pre-aggregated
+        # rollup queries) rejecting the DECIMAL(p,s) type outright, not a
+        # transient/resource error like the CUBE_TIMEOUT ones elsewhere
+        # in this file -- every retry with the identical query fails the
+        # same way, and it always will until the cast itself changes.
+        # DOUBLE is well-supported by Cube Store, so cast to that instead
+        # and use ROUND on the resulting double for the same 3-decimal
+        # display precision.
+        sql: "ROUND(CAST({total_batting_hits} AS DOUBLE) / NULLIF({total_batting_at_bats}, 0) * 1000) / 1000"
+        # Does NOT need to be listed in the pre-aggregation's own
+        # "measures" below -- Cube derives calculated measures like this
+        # one from the underlying total_batting_hits/total_batting_at_bats
+        # sums already present in a matching rollup, at query time. Adding
+        # it there directly isn't valid anyway (a ratio can't itself be
+        # pre-summed).
+
+      - name: total_fielding_pct
+        title: "Fielding Percentage"
+        type: number
+        # Calculated measure (references other measures, not a raw
+        # column) -- same pattern as total_batting_avg above. Cube
+        # computes this AFTER total_fielding_putouts/total_fielding_
+        # assists/total_fielding_chances are aggregated to whatever
+        # grain the query asks for, so it's automatically correct at
+        # any grouping this cube supports.
+        #
+        # Fielding percentage = (putouts + assists) / chances. Built
+        # from putouts/assists/chances on the aggregated totals rather
+        # than any per-game raw fielding_pct-style column (no such raw
+        # column exists on this cube -- unlike batting_avg_raw/
+        # pitching_era_raw -- so there's no per-game reference value to
+        # accidentally sum/average here in the first place).
+        #
+        # NULLIF guards the zero-chances case (e.g. a player who never
+        # recorded a putout, assist, or error in the filtered games) so
+        # the result comes back NULL instead of erroring or returning a
+        # fake 0/1.000 -- "no chances to compute a rate from" is a
+        # different answer than "fielded 1.000" or ".000".
+        #
+        # Cast to DOUBLE rather than DECIMAL(p,s) -- see the CONFIRMED
+        # BUG note on total_batting_avg above: Cube Store's DataFusion
+        # engine rejects DECIMAL(p,s) outright with CUBE_QUERY_REJECTED
+        # (400) on every query that touches the measure. DOUBLE is well
+        # -supported, so cast to that and use ROUND on the resulting
+        # double for the same 3-decimal display precision.
+        sql: "ROUND((CAST({total_fielding_putouts} AS DOUBLE) + CAST({total_fielding_assists} AS DOUBLE)) / NULLIF({total_fielding_chances}, 0) * 1000) / 1000"
+        # Does NOT need to be listed in the pre-aggregation's own
+        # "measures" below -- total_fielding_putouts/total_fielding_
+        # assists/total_fielding_chances are already present in the
+        # by_player_opponent_season rollup's measures list, so Cube can
+        # derive this ratio from that matching rollup at query time.
+        # Adding it there directly isn't valid anyway (a ratio can't
+        # itself be pre-summed).
+
+    pre_aggregations:
+      # CONFIRMED ROOT CAUSE (2026-09-04): this cube had NO pre-aggregations,
+      # so every query -- including a narrow "one player vs one opponent in
+      # one season" filter -- ran live against the underlying warehouse over
+      # the full one-row-per-player-per-game fact table. Under a 50-question
+      # back-to-back batch (results_20260904_120431.json), that surfaced as
+      # "operation timed out for an unknown reason" and eventually
+      # "insufficient system memory in resource pool 'default'" -- both are
+      # the warehouse's own resource-governor rejections, not Cube or the
+      # LLM, and the run ended with the app process itself unreachable.
+      # is_home/opponent_team_name filters are exactly the "concrete query
+      # pattern" the old comment here was waiting on -- see hitters.json /
+      # PLAYER_STATS_TEST_QUESTIONS, which are almost entirely
+      # player-vs-opponent-in-a-season lookups.
+      #
+      # Rollup grain: one row per (player, team, opponent, season, game
+      # type) -- matches every total_* measure's natural grouping and
+      # covers player-vs-opponent, team-vs-opponent (no player_name in a
+      # query still rolls up correctly through this same table), and
+      # plain season-totals queries (opponent_team_name simply isn't
+      # filtered/grouped in the query, which Cube can still answer from a
+      # pre-agg that has it as an extra dimension). Does NOT cover
+      # game_date-level questions (per-game listings, date-range filters)
+      # -- those still need the raw table; keeping this rollup at
+      # game-omitted grain is what makes it small enough to be worth
+      # building at all.
+      - name: by_player_opponent_season
+        type: rollup
+        measures:
+          - count
+          - distinct_players
+          - total_pitching_outs_recorded
+          - total_pitching_hits_allowed
+          - total_pitching_runs_allowed
+          - total_pitching_earned_runs
+          - total_pitching_walks
+          - total_pitching_strikeouts
+          - total_pitching_home_runs_allowed
+          - total_fielding_putouts
+          - total_fielding_assists
+          - total_fielding_errors
+          - total_fielding_chances
+          - total_batting_at_bats
+          - total_batting_runs
+          - total_batting_hits
+          - total_batting_doubles
+          - total_batting_triples
+          - total_batting_home_runs
+          - total_batting_rbi
+          - total_batting_walks
+          - total_batting_strikeouts
+          - total_batting_stolen_bases
+          - total_batting_left_on_base
+        dimensions:
+          - player_name
+          - team_name
+          - opponent_team_name
+          - opponent_teams.division_name
+          - opponent_teams.league_name
+          - position_name
+          - game_type_desc
+          - season
+          - is_home
+          - start_hour
+          # start_hour added (2026-09-04) -- same reasoning as is_home
+          # above: "games starting at 7pm" / "day games vs night games"
+          # -type filters and group-bys need start_hour present as a
+          # rollup dimension itself, or Cube can't match those queries to
+          # this rollup and falls back to a live scan of the raw table --
+          # the exact failure this rollup exists to prevent.
+          # division_name/league_name added now that the opponent_teams
+          # join exists (see joins above) -- without these two also being
+          # rollup dimensions, a "which player hit the most doubles
+          # against AL East opponents" query (filtering opponent_teams.
+          # division_name IN [...]) couldn't be served from this rollup
+          # at all and would fall back to a live warehouse query -- the
+          # exact problem this rollup exists to prevent. season listed
+          # explicitly (not just implied by the game_date time_dimension
+          # below) because every worked example in
+          # PLAYER_STATS_JSON_PROMPT_HEADER filters season as a plain
+          # equals filter, not a timeDimensions dateRange -- Cube can only
+          # match this rollup to those queries if season is itself a
+          # rollup dimension.
+        time_dimension: game_date
+        granularity: month
+        # Monthly granularity keeps this queryable for "in April 2025"
+        # -type filters (still rolls up to a season total across months)
+        # without needing day-level grain, which would make the rollup
+        # roughly as large as the raw table and defeat the point.
+        # FIX (2026-09-04): Cube's YAML schema requires "indexes" as an
+        # ARRAY of {name, columns} objects -- the mapping-keyed-by-name
+        # shape below is only valid in the older JavaScript DSL
+        # (`indexes: { fooIdx: { columns: [...] } }`), not YAML. Cube's
+        # own compiler error was blunt about it ("preAggregation.indexs
+        # must be defined as array") but easy to misread as a typo in the
+        # key name itself rather than the value's shape.
+        indexes:
+          - name: player_opponent_idx
+            columns:
+              - player_name
+              - opponent_team_name
+              - season
+          - name: team_opponent_idx
+            columns:
+              - team_name
+              - opponent_team_name
+              - season
+          - name: player_division_idx
+            columns:
+              - player_name
+              - opponent_teams.division_name
+              - season
+          - name: player_home_idx
+            columns:
+              - player_name
+              - is_home
+              - season
+          - name: player_start_hour_idx
+            columns:
+              - player_name
+              - start_hour
+              - season
+        refresh_key:
+          every: "1 hour"
+        build_range_start:
+          sql: "SELECT DATE '2015-01-01'"
+        build_range_end:
+          sql: "SELECT CURRENT_DATE"

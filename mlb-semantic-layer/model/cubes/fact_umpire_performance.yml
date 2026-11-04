@@ -1,0 +1,146 @@
+cubes:
+  - name: fact_umpire_performance
+    sql_table: silver.fact_umpire_performance
+    data_source: default
+    title: "Umpire Performance"
+    description: "One row per game x home-plate umpire. NOTE: total_challenges/overturned_challenges/upheld_challenges/overturn_rate_pct reflect ALL challenge activity in that game, not challenges specific to this umpire's calls -- dim_challenges has no umpire-level attribution, so this is an inherent data limitation, not something fixable in this model alone."
+
+    joins:
+      - name: dim_games
+        sql: "{CUBE}.game_pk = {dim_games.game_pk}"
+        relationship: many_to_one
+
+      - name: dim_game_umpires
+        # CAUTION: dim_game_umpires' own surrogate key includes load_id
+        # (see that cube's description), meaning it can have duplicate
+        # rows per (game_pk, official_id) across incremental loads that
+        # aren't deduplicated the way this model's own umpires_deduped
+        # CTE handles internally. This join could fan out for umpire-name
+        # lookups until dim_game_umpires gets the same kind of dedup fix
+        # applied to it directly.
+        sql: "{CUBE}.game_pk = {dim_game_umpires.game_pk} AND {CUBE}.official_id = {dim_game_umpires.official_id}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: umpire_performance_key
+        sql: umpire_performance_key
+        type: string
+        primary_key: true
+        public: false
+
+      - name: game_pk
+        sql: game_pk
+        type: number
+        public: false
+
+      - name: official_id
+        sql: official_id
+        type: number
+        title: "Umpire"
+        # No standalone umpire bio/name dimension exists in this project
+        # yet -- join to dim_game_umpires (with the caution noted above)
+        # for full_name.
+
+      - name: called_strikes_outside_zone
+        sql: called_strikes_outside_zone
+        type: number
+        title: "Called Strikes Outside Zone"
+
+      - name: zones_with_bad_calls
+        sql: zones_with_bad_calls
+        type: number
+        title: "Zones With Bad Calls"
+
+      - name: worst_zone
+        sql: worst_zone
+        type: number
+        title: "Worst Zone"
+
+      - name: worst_zone_count
+        sql: worst_zone_count
+        type: number
+        title: "Bad Calls in Worst Zone"
+
+      - name: total_challenges
+        sql: total_challenges
+        type: number
+        public: false
+        title: "Total Challenges (game-level, see cube description)"
+
+      - name: overturned_challenges
+        sql: overturned_challenges
+        type: number
+        public: false
+
+      - name: upheld_challenges
+        sql: upheld_challenges
+        type: number
+        public: false
+
+      - name: overturn_rate_pct
+        sql: overturn_rate_pct
+        type: number
+        public: false
+        title: "Overturn Rate % (this game, see cube description)"
+        # Reference only -- do not average directly across many rows
+        # (unweighted by challenge volume). Use weighted_overturn_rate_pct
+        # below for a properly weighted figure.
+
+      - name: load_id
+        sql: load_id
+        type: string
+        public: false
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Umpire-Games"
+
+      - name: distinct_umpires
+        sql: official_id
+        type: count_distinct
+        title: "Distinct Umpires"
+
+      - name: total_called_strikes_outside_zone
+        sql: called_strikes_outside_zone
+        type: sum
+        title: "Total Called Strikes Outside Zone"
+
+      - name: avg_called_strikes_outside_zone
+        sql: called_strikes_outside_zone
+        type: avg
+        title: "Average Called Strikes Outside Zone per Game"
+
+      - name: total_worst_zone_count
+        sql: worst_zone_count
+        type: sum
+        title: "Total Bad Calls in Worst Zones"
+
+      - name: total_challenges_sum
+        sql: total_challenges
+        type: sum
+        title: "Total Challenges (across games)"
+
+      - name: total_overturned_challenges
+        sql: overturned_challenges
+        type: sum
+        title: "Total Overturned Challenges"
+
+      - name: total_upheld_challenges
+        sql: upheld_challenges
+        type: sum
+        title: "Total Upheld Challenges"
+
+      - name: weighted_overturn_rate_pct
+        type: number
+        title: "Overturn Rate % (volume-weighted)"
+        sql: "100.0 * {total_overturned_challenges} / NULLIF({total_challenges_sum}, 0)"
+        format: percent
+        # Correctly weighted by challenge volume, unlike averaging
+        # overturn_rate_pct directly (which would treat a 1-challenge
+        # game and a 5-challenge game as equally significant).
+
+    pre_aggregations:
+      # Real fact-shaped table with a resolvable date via the dim_games
+      # join -- reasonable rollup candidate (e.g. by season/umpire), left
+      # empty pending a concrete query pattern to match.

@@ -1,0 +1,14 @@
+{
+  "name": "mlb-semantic-layer",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "cubejs-server"
+  },
+  "template": "docker",
+  "templateVersion": "1.4.4",
+  "devDependencies": {
+    "@cubejs-backend/mssql-driver": "^1.4.4",
+    "@cubejs-backend/server": "^1.4.4"
+  }
+}

@@ -4,6 +4,7 @@ config-version: 2
 
 profile: 'baseball_dw'
 
+  
 model-paths: ["models"]
 analysis-paths: ["analyses"]
 test-paths: ["tests"]
@@ -16,8 +17,8 @@ clean-targets:
   - "dbt_packages"
 
 flags:
-  dbt_sqlserver_use_native_string_types: False
-  dbt_sqlserver_use_dbt_transactions: False
+  dbt_sqlserver_use_native_string_types: true
+  dbt_sqlserver_use_dbt_transactions: false
 models:
   baseball_dw:
     # Stage

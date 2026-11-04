@@ -1,0 +1,49 @@
+cubes:
+  - name: dim_game_status
+    sql_table: silver.dim_game_status
+    data_source: default
+    title: "Game Status"
+    description: "One row per distinct (coded_game_state, status_code) combination. Note: coded_game_state alone is NOT unique -- this dimension's real key is the pair, so any join to it (e.g. from dim_games) needs both columns, not just coded_game_state, to avoid matching multiple rows."
+
+    joins: []
+
+    dimensions:
+      - name: game_status_key
+        sql: game_status_key
+        type: string
+        primary_key: true
+        public: false
+
+      - name: status_coded_game_state
+        sql: status__coded_game_state
+        type: string
+        title: "Coded Game State"
+
+      - name: status_status_code
+        sql: status__status_code
+        type: string
+        title: "Status Code"
+
+      - name: status_abstract_game_state
+        sql: status__abstract_game_state
+        type: string
+        title: "Abstract Game State"
+
+      - name: status_abstract_game_code
+        sql: status__abstract_game_code
+        type: string
+        title: "Abstract Game Code"
+
+      - name: status_detailed_state
+        sql: status__detailed_state
+        type: string
+        title: "Detailed State"
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Status Combinations"
+
+    pre_aggregations:
+      # Deliberately left empty -- small reference/lookup table, not a
+      # good pre-aggregation candidate (same reasoning as dim_award).

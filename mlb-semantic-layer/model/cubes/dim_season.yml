@@ -1,0 +1,146 @@
+cubes:
+  - name: dim_season
+    sql_table: silver.dim_season
+    data_source: default
+    title: "Season"
+    description: "One row per MLB season, with phase-boundary dates (spring training, regular season, all-star break, postseason, offseason) and batting/ERA title qualification thresholds."
+
+    joins: []
+    # The previous version had a join here to a "seasons" cube
+    # ({CUBE.season_id} = {seasons.season_id}) -- removed. No evidence of
+    # a cube literally named "seasons" anywhere else in this project
+    # (every season-related model is dim_season); this looked like a
+    # bogus auto-scaffold guess based on the season_id column name, and
+    # its syntax ({CUBE.field}, dot inside the braces) also didn't match
+    # this project's established {CUBE}.field join style. Remove this
+    # note if "seasons" does turn out to be a real cube elsewhere.
+
+    dimensions:
+      - name: season_key
+        sql: season_key
+        type: string
+        primary_key: true
+        public: false
+
+      - name: season
+        sql: season
+        type: number
+        title: "Season"
+        # CRITICAL: this was missing entirely before. dim_date.yml's join
+        # to this cube references {dim_season.season} -- without this
+        # dimension existing, that join could not have worked.
+
+      - name: season_id
+        sql: season_id
+        type: number
+        title: "Season ID"
+        # Retyped from string -> number, matching every other *_id column
+        # convention across this project (game_pk, player_id, team_id,
+        # venue_id, etc.) -- not independently confirmed for this specific
+        # column.
+
+      - name: has_wildcard
+        sql: has_wildcard
+        type: number
+        title: "Has Wildcard?"
+        # Retyped from string -> number (assumed 0/1 flag, matching
+        # convention elsewhere in this project) -- verify actual values.
+
+      - name: pre_season_start_date
+        sql: pre_season_start_date
+        type: time
+        title: "Pre-Season Start"
+
+      - name: pre_season_end_date
+        sql: pre_season_end_date
+        type: time
+        title: "Pre-Season End"
+
+      - name: spring_start_date
+        sql: spring_start_date
+        type: time
+        title: "Spring Training Start"
+
+      - name: spring_end_date
+        sql: spring_end_date
+        type: time
+        title: "Spring Training End"
+
+      - name: regular_season_start_date
+        sql: regular_season_start_date
+        type: time
+        title: "Regular Season Start"
+
+      - name: last_date1st_half
+        sql: last_date1st_half
+        type: time
+        title: "Last Date, 1st Half"
+
+      - name: all_star_date
+        sql: all_star_date
+        type: time
+        title: "All-Star Date"
+
+      - name: first_date2nd_half
+        sql: first_date2nd_half
+        type: time
+        title: "First Date, 2nd Half"
+
+      - name: regular_season_end_date
+        sql: regular_season_end_date
+        type: time
+        title: "Regular Season End"
+
+      - name: post_season_start_date
+        sql: post_season_start_date
+        type: time
+        title: "Postseason Start"
+
+      - name: post_season_end_date
+        sql: post_season_end_date
+        type: time
+        title: "Postseason End"
+
+      - name: season_start_date
+        sql: season_start_date
+        type: time
+        title: "Season Start (overall)"
+
+      - name: season_end_date
+        sql: season_end_date
+        type: time
+        title: "Season End (overall)"
+
+      - name: offseason_start_date
+        sql: offseason_start_date
+        type: time
+        title: "Offseason Start"
+
+      - name: off_season_end_date
+        sql: off_season_end_date
+        type: time
+        title: "Offseason End"
+
+      - name: qualifier_plate_appearances
+        sql: qualifier_plate_appearances
+        type: number
+        title: "Batting Title Qualifier (PA)"
+
+      - name: qualifier_outs_pitched
+        sql: qualifier_outs_pitched
+        type: number
+        title: "ERA Title Qualifier (Outs)"
+
+      - name: regular_season_days
+        sql: regular_season_days
+        type: number
+        title: "Regular Season Length (days)"
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Seasons"
+
+    pre_aggregations:
+      # Deliberately left empty -- small reference/lookup table (one row
+      # per season), not a good pre-aggregation candidate.

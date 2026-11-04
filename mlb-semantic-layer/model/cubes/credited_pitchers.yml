@@ -1,0 +1,8 @@
+# Extends dim_player under a distinct name so fact_at_bats can join
+# pitcher_id (the pitcher credited with the at-bat -- who threw the
+# final/deciding pitch, per the SQL's comment) as an independent role
+# from first_pitchers/at_bat_batters below. Same reasoning as
+# winning_pitchers.yml/losing_pitchers.yml/save_pitchers.yml.
+cubes:
+  - name: credited_pitchers
+    extends: dim_player

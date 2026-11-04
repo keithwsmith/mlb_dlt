@@ -1,0 +1,8 @@
+# Extends dim_teams under a distinct cube name so dim_games can join to
+# home_team_id and away_team_id as two independent roles, without
+# violating Cube's rule that a join's name must match a real cube name
+# pointing to a single physical join path. See away_teams.yml for the
+# other role.
+cubes:
+  - name: home_teams
+    extends: dim_teams

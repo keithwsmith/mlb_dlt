@@ -1,0 +1,28 @@
+cubes:
+  - name: mart_pitcher_game
+    sql_table: silver.mart_pitcher_game
+    data_source: default
+
+    joins: []
+
+    dimensions:
+      - name: load_id
+        sql: load_id
+        type: string
+
+      - name: pitcher_hand
+        sql: pitcher_hand
+        type: string
+
+    measures:
+      - name: count
+        type: count
+
+      - name: balls_total
+        sql: balls_total
+        type: sum
+
+    pre_aggregations:
+      # Pre-aggregation definitions go here.
+      # Learn more in the documentation: https://cube.dev/docs/caching/pre-aggregations/getting-started
+

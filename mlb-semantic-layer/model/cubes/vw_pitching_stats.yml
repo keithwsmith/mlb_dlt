@@ -1,0 +1,183 @@
+cubes:
+  - name: vw_pitching_stats
+    sql_table: dw.vw_pitching_stats
+    data_source: default
+    title: "Pitching Stats (Season View)"
+    description: "One row per player/season/team pitching line. Rebuilt to match the rewritten vw_pitching_stats.sql (now sourced from silver.fact_player_stats + dim_player/dim_team) -- this cube previously reflected the OLD view's columns (player__first_name/last_name, sport__abbreviation, opp_avg/obp/ops/slg, bb_per9/hr_per9/r_per9, k_bb_ratio, k_per9, pitches_per_inning, strike_pct), none of which exist in the rewritten view."
+
+    joins:
+      - name: dim_teams
+        # FIX: {CUBE}.team_id referenced a column that doesn't exist on
+        # this view -- the underlying dw.vw_pitching_stats column is
+        # actually team__id (double underscore, same denormalized naming
+        # as the team_id dimension's own `sql: team__id` below). The old
+        # join SQL was a raw column reference, not a dimension reference,
+        # so SQL Server rejected it with "Invalid column name 'team_id'".
+        sql: "{CUBE}.team__id = {dim_teams.team_id} AND {CUBE}.season = {dim_teams.season}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: player_id
+        sql: player__id
+        type: number
+        primary_key: true
+
+      - name: season
+        sql: season
+        type: number
+        primary_key: true
+
+      - name: team_id
+        sql: team__id
+        type: number
+        primary_key: true
+
+      - name: player_full_name
+        sql: player__full_name
+        type: string
+        title: "Player"
+
+      - name: team_name
+        sql: team__name
+        type: string
+        title: "Team"
+
+      - name: league_id
+        sql: league__id
+        type: number
+        public: false
+
+      - name: league_name
+        sql: league__name
+        type: string
+        title: "League"
+
+      - name: sport_id
+        sql: sport__id
+        type: number
+        public: false
+
+      - name: sport_name
+        sql: sport_name
+        type: string
+        title: "Sport"
+
+      - name: position_code
+        sql: position_code
+        type: string
+        title: "Position"
+
+      - name: wins
+        sql: wins
+        type: number
+        public: false
+
+      - name: losses
+        sql: losses
+        type: number
+        public: false
+
+      - name: win_pct
+        sql: win_pct
+        type: number
+        title: "Win %"
+        # Retyped from string -> number -- computed as a real FLOAT in
+        # the rewritten view.
+
+      - name: era
+        sql: era
+        type: number
+        title: "ERA"
+
+      - name: games_finished
+        sql: games_finished
+        type: number
+        public: false
+
+      - name: saves
+        sql: saves
+        type: number
+        public: false
+
+      - name: save_opportunities
+        sql: save_opportunities
+        type: number
+        public: false
+
+      - name: holds
+        sql: holds
+        type: number
+        public: false
+
+      - name: innings_pitched
+        sql: innings_pitched
+        type: string
+        title: "Innings Pitched"
+        # Genuinely a display-format string in the source (e.g. "182.1"),
+        # not a real decimal -- consistent with how this is typed
+        # elsewhere in this project (fact_player_stats, dim_player_stats).
+
+      - name: h_per9
+        sql: h_per9
+        type: number
+        title: "Hits per 9 IP"
+
+      - name: earned_runs
+        sql: earned_runs
+        type: number
+        public: false
+
+      - name: strikeouts_pitched
+        sql: strikeouts_pitched
+        type: number
+        public: false
+
+      - name: whip
+        sql: whip
+        type: number
+        title: "WHIP"
+
+      - name: dlt_load_id
+        sql: _dlt_load_id
+        type: string
+        public: false
+
+      - name: dlt_id
+        sql: _dlt_id
+        type: string
+        public: false
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Player-Seasons"
+
+      - name: distinct_players
+        sql: player_id
+        type: count_distinct
+        title: "Distinct Players"
+
+      - name: total_wins
+        sql: wins
+        type: sum
+        title: "Total Wins"
+
+      - name: total_saves
+        sql: saves
+        type: sum
+        title: "Total Saves"
+
+      - name: total_strikeouts_pitched
+        sql: strikeouts_pitched
+        type: sum
+        title: "Total Strikeouts"
+
+      - name: avg_era
+        sql: era
+        type: avg
+        title: "Average ERA"
+        # CAVEAT: unweighted average across player-seasons, not
+        # innings-pitched-weighted.
+
+    pre_aggregations:
+      # Deliberately left empty pending a concrete query pattern to match.

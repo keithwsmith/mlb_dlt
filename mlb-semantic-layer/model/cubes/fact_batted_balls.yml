@@ -1,0 +1,269 @@
+cubes:
+  - name: fact_batted_balls
+    sql_table: silver.fact_batted_balls
+    data_source: default
+    title: "Batted Ball"
+    description: "One row per batted-ball event (is_in_play=1 AND exit_velocity IS NOT NULL from stg_play_events), with derived quality-of-contact classifications (hard-hit, barrel, sweet spot)."
+
+    joins:
+      - name: dim_games
+        sql: "{CUBE}.game_pk = {dim_games.game_pk}"
+        relationship: many_to_one
+
+      - name: dim_pitch_type
+        sql: "{CUBE}.pitch_type_code = {dim_pitch_type.pitch_type_code}"
+        relationship: many_to_one
+
+      - name: credited_pitchers
+        # Reusing the dim_player-extending cube built for fact_at_bats --
+        # naming is slightly at_bat-specific but functionally this is
+        # just "join to dim_player, current version" for the pitcher
+        # role. Worth renaming to something more generic (e.g. `pitchers`)
+        # if more fact tables end up reusing it this way.
+        sql: "{CUBE}.pitcher_id = {credited_pitchers.player_id} AND {credited_pitchers.is_current} = 1"
+        relationship: many_to_one
+
+      - name: at_bat_batters
+        # Same reuse note as credited_pitchers above.
+        sql: "{CUBE}.batter_id = {at_bat_batters.player_id} AND {at_bat_batters.is_current} = 1"
+        relationship: many_to_one
+
+    dimensions:
+      - name: event_id
+        sql: event_id
+        type: string
+        primary_key: true
+        public: false
+
+      - name: game_pk
+        sql: game_pk
+        type: number
+        public: false
+
+      - name: season
+        sql: season
+        type: number
+
+      - name: at_bat_index
+        sql: at_bat_index
+        type: number
+        public: false
+
+      - name: pitch_number
+        sql: pitch_number
+        type: number
+        title: "Pitch # (in at-bat)"
+        # Moved from a broken `sum` measure -- an ordinal position within
+        # an at-bat, not something to total across rows.
+
+      - name: load_id
+        sql: load_id
+        type: string
+        public: false
+
+      - name: pitcher_id
+        sql: pitcher_id
+        type: number
+        public: false
+
+      - name: batter_id
+        sql: batter_id
+        type: number
+        public: false
+
+      - name: pitch_type_code
+        sql: pitch_type_code
+        type: string
+        public: false
+        # Redundant with the dim_pitch_type join -- kept for reference.
+
+      - name: pitch_type_description
+        sql: pitch_type_description
+        type: string
+        title: "Pitch Type"
+
+      - name: batter_side
+        sql: batter_side
+        type: string
+        title: "Batter Side"
+
+      - name: pitcher_hand
+        sql: pitcher_hand
+        type: string
+        title: "Pitcher Hand"
+
+      - name: balls
+        sql: balls
+        type: number
+
+      - name: strikes
+        sql: strikes
+        type: number
+
+      - name: outs_when_up
+        sql: outs_when_up
+        type: number
+        title: "Outs When Up"
+
+      - name: exit_velocity
+        sql: exit_velocity
+        type: number
+        title: "Exit Velocity"
+
+      - name: launch_angle
+        sql: launch_angle
+        type: number
+        title: "Launch Angle"
+
+      - name: hit_distance
+        sql: hit_distance
+        type: number
+        title: "Hit Distance"
+
+      - name: trajectory
+        sql: trajectory
+        type: string
+        public: false
+        # Prefer trajectory_abbrev below for a cleaner display value.
+
+      - name: trajectory_abbrev
+        sql: trajectory_abbrev
+        type: string
+        title: "Trajectory"
+
+      - name: hit_hardness
+        sql: hit_hardness
+        type: string
+        title: "Hit Hardness"
+
+      - name: hit_location
+        sql: hit_location
+        type: string
+        title: "Hit Location"
+
+      - name: hit_coord_x
+        sql: hit_coord_x
+        type: number
+        public: false
+        title: "Spray Chart X"
+
+      - name: hit_coord_y
+        sql: hit_coord_y
+        type: number
+        public: false
+        title: "Spray Chart Y"
+
+      - name: release_speed
+        sql: release_speed
+        type: number
+        title: "Pitch Release Speed"
+
+      - name: plate_x
+        sql: plate_x
+        type: number
+        public: false
+
+      - name: plate_z
+        sql: plate_z
+        type: number
+        public: false
+
+      - name: is_hard_hit
+        sql: is_hard_hit
+        type: number
+        public: false
+        title: "Hard Hit? (95+ mph EV)"
+
+      - name: is_barrel
+        sql: is_barrel
+        type: number
+        public: false
+        title: "Barrel? (98+ mph EV, 26-30° LA)"
+
+      - name: is_sweet_spot
+        sql: is_sweet_spot
+        type: number
+        public: false
+        title: "Sweet Spot? (8-32° LA)"
+
+      - name: is_out
+        sql: is_out
+        type: number
+        title: "Is Out?"
+        # Retyped from string -> number, matching this project's 0/1 flag
+        # convention -- verify actual stored values.
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Batted Balls"
+
+      - name: distinct_pitchers
+        sql: pitcher_id
+        type: count_distinct
+        title: "Distinct Pitchers"
+
+      - name: distinct_batters
+        sql: batter_id
+        type: count_distinct
+        title: "Distinct Batters"
+
+      - name: hard_hit_rate
+        sql: is_hard_hit
+        type: avg
+        title: "Hard-Hit Rate"
+        format: percent
+
+      - name: barrel_rate
+        sql: is_barrel
+        type: avg
+        title: "Barrel Rate"
+        format: percent
+
+      - name: sweet_spot_rate
+        sql: is_sweet_spot
+        type: avg
+        title: "Sweet Spot Rate"
+        format: percent
+
+      - name: out_rate
+        sql: is_out
+        type: avg
+        title: "Out Rate"
+        format: percent
+
+      - name: avg_exit_velocity
+        sql: exit_velocity
+        type: avg
+        title: "Average Exit Velocity"
+
+      - name: max_exit_velocity
+        sql: exit_velocity
+        type: max
+        title: "Max Exit Velocity"
+
+      - name: avg_launch_angle
+        sql: launch_angle
+        type: avg
+        title: "Average Launch Angle"
+
+      - name: avg_hit_distance
+        sql: hit_distance
+        type: avg
+        title: "Average Hit Distance"
+
+      - name: max_hit_distance
+        sql: hit_distance
+        type: max
+        title: "Max Hit Distance"
+
+      - name: avg_release_speed
+        sql: release_speed
+        type: avg
+        title: "Average Pitch Speed (Hit)"
+
+    pre_aggregations:
+      # Real fact-shaped table -- good rollup candidate (e.g. by season/
+      # trajectory_abbrev), but no direct date/time column of its own to
+      # anchor one without pulling game_date in via the dim_games join.
+      # Left empty pending a concrete query pattern to match.

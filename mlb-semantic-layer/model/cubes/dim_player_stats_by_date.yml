@@ -1,0 +1,275 @@
+cubes:
+  - name: dim_player_stats_by_date
+    sql_table: silver.dim_player_stats_by_date
+    data_source: default
+    title: "Player Season-to-Date Stats"
+    description: "One row per player per game_date -- end-of-day CUMULATIVE season totals as of that date, reset each season, NOT split by team (a mid-season trade still accumulates one continuous season total; team_id/team_name just reflect that date's context). IMPORTANT: the *_to_date columns are already running totals -- do NOT sum them across dates (that double/triple/n-counts a season, since each row already includes every prior date). Filter to a specific game_date, or use the max_*_to_date measures below to get a player's final/latest cumulative value within a query's date range."
+
+    joins:
+      - name: dim_teams
+        # Compound join -- dim_teams' real unique key is (team_id, season).
+        sql: "{CUBE}.team_id = {dim_teams.team_id} AND {CUBE}.season = {dim_teams.season}"
+        relationship: many_to_one
+
+      - name: dim_player
+        sql: "{CUBE}.player_id = {dim_player.player_id} AND {dim_player.is_current} = 1"
+        relationship: many_to_one
+
+    dimensions:
+      - name: player_id
+        sql: player_id
+        type: number
+        primary_key: true
+
+      - name: season
+        sql: season
+        type: number
+        primary_key: true
+
+      - name: game_date
+        sql: game_date
+        type: time
+        primary_key: true
+        title: "As Of Date"
+        # Composite grain (player_id, season, game_date) matches this
+        # model's documented grain in dimensions_schema.yml.
+
+      - name: player_name
+        sql: player_name
+        type: string
+        title: "Player"
+
+      - name: team_id
+        sql: team_id
+        type: number
+        public: false
+
+      - name: team_name
+        sql: team_name
+        type: string
+        title: "Team (as of this date)"
+
+      - name: games_played
+        sql: games_played
+        type: number
+        title: "Games Played (this date)"
+        # Per-DAY count (1, or 2 on a doubleheader date) -- NOT cumulative.
+        # Safe to sum across dates, unlike everything below.
+
+      - name: games_played_to_date
+        sql: games_played_to_date
+        type: number
+        title: "Games Played (season, cumulative)"
+
+      - name: games_batted_to_date
+        sql: games_batted_to_date
+        type: number
+        title: "Games Batted (season, cumulative)"
+
+      - name: games_pitched_to_date
+        sql: games_pitched_to_date
+        type: number
+        title: "Games Pitched (season, cumulative)"
+
+      - name: games_fielded_to_date
+        sql: games_fielded_to_date
+        type: number
+        title: "Games Fielded (season, cumulative)"
+
+      - name: pitching_outs_recorded_to_date
+        sql: pitching_outs_recorded_to_date
+        type: number
+        title: "Outs Recorded (season, cumulative)"
+
+      - name: pitching_innings_pitched_to_date
+        sql: pitching_innings_pitched_to_date
+        type: string
+        title: "Innings Pitched (season, cumulative)"
+        # Genuinely a display STRING (e.g. "13.2"), built via string
+        # concatenation in the SQL for MLB's whole.partial-outs notation --
+        # not a real decimal number. Don't sort/filter numerically on this;
+        # use pitching_outs_recorded_to_date instead.
+
+      - name: pitching_hits_allowed_to_date
+        sql: pitching_hits_allowed_to_date
+        type: number
+        title: "Hits Allowed (season, cumulative)"
+
+      - name: pitching_runs_allowed_to_date
+        sql: pitching_runs_allowed_to_date
+        type: number
+        title: "Runs Allowed (season, cumulative)"
+
+      - name: pitching_earned_runs_to_date
+        sql: pitching_earned_runs_to_date
+        type: number
+        title: "Earned Runs Allowed (season, cumulative)"
+
+      - name: pitching_walks_to_date
+        sql: pitching_walks_to_date
+        type: number
+        title: "Pitching Walks (season, cumulative)"
+
+      - name: pitching_strikeouts_to_date
+        sql: pitching_strikeouts_to_date
+        type: number
+        title: "Pitching Strikeouts (season, cumulative)"
+
+      - name: pitching_home_runs_allowed_to_date
+        sql: pitching_home_runs_allowed_to_date
+        type: number
+        title: "Home Runs Allowed (season, cumulative)"
+
+      - name: pitching_era_to_date
+        sql: pitching_era_to_date
+        type: number
+        title: "ERA (season, cumulative)"
+        # Retyped from string -> number -- ROUND() of a real division in
+        # the SQL, not text. Derived fresh each row from cumulative counts
+        # (never summed) -- see cube description.
+
+      - name: fielding_putouts_to_date
+        sql: fielding_putouts_to_date
+        type: number
+        title: "Putouts (season, cumulative)"
+
+      - name: fielding_assists_to_date
+        sql: fielding_assists_to_date
+        type: number
+        title: "Assists (season, cumulative)"
+
+      - name: fielding_errors_to_date
+        sql: fielding_errors_to_date
+        type: number
+        title: "Errors (season, cumulative)"
+
+      - name: fielding_chances_to_date
+        sql: fielding_chances_to_date
+        type: number
+        title: "Fielding Chances (season, cumulative)"
+
+      - name: fielding_pct_to_date
+        sql: fielding_pct_to_date
+        type: number
+        title: "Fielding Pct (season, cumulative)"
+        # Retyped from string -> number, same reasoning as pitching_era_to_date.
+
+      - name: batting_at_bats_to_date
+        sql: batting_at_bats_to_date
+        type: number
+        title: "At-Bats (season, cumulative)"
+
+      - name: batting_runs_to_date
+        sql: batting_runs_to_date
+        type: number
+        title: "Runs (season, cumulative)"
+
+      - name: batting_hits_to_date
+        sql: batting_hits_to_date
+        type: number
+        title: "Hits (season, cumulative)"
+
+      - name: batting_doubles_to_date
+        sql: batting_doubles_to_date
+        type: number
+        title: "Doubles (season, cumulative)"
+
+      - name: batting_triples_to_date
+        sql: batting_triples_to_date
+        type: number
+        title: "Triples (season, cumulative)"
+
+      - name: batting_home_runs_to_date
+        sql: batting_home_runs_to_date
+        type: number
+        title: "Home Runs (season, cumulative)"
+
+      - name: batting_rbi_to_date
+        sql: batting_rbi_to_date
+        type: number
+        title: "RBI (season, cumulative)"
+
+      - name: batting_walks_to_date
+        sql: batting_walks_to_date
+        type: number
+        title: "Walks (season, cumulative)"
+
+      - name: batting_strikeouts_to_date
+        sql: batting_strikeouts_to_date
+        type: number
+        title: "Strikeouts (season, cumulative)"
+
+      - name: batting_stolen_bases_to_date
+        sql: batting_stolen_bases_to_date
+        type: number
+        title: "Stolen Bases (season, cumulative)"
+
+      - name: batting_left_on_base_to_date
+        sql: batting_left_on_base_to_date
+        type: number
+        title: "Left On Base (season, cumulative)"
+
+      - name: batting_avg_to_date
+        sql: batting_avg_to_date
+        type: number
+        title: "Batting Avg (season, cumulative)"
+        # Retyped from string -> number, same reasoning as pitching_era_to_date.
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Player-Dates"
+
+      - name: distinct_players
+        sql: player_id
+        type: count_distinct
+        title: "Distinct Players"
+
+      - name: total_games_played
+        sql: games_played
+        type: sum
+        title: "Total Games Played"
+        # Safe -- games_played is a per-day count, not cumulative.
+
+      # ── max() of a *_to_date column, grouped by player+season, returns
+      #    that player's final/latest cumulative value within whatever
+      #    date range the query covers -- the CORRECT way to get an
+      #    end-of-range season total from this table, unlike sum(). ────
+      - name: max_batting_hits_to_date
+        sql: batting_hits_to_date
+        type: max
+        title: "Season Hits (as of latest date in range)"
+
+      - name: max_batting_home_runs_to_date
+        sql: batting_home_runs_to_date
+        type: max
+        title: "Season Home Runs (as of latest date in range)"
+
+      - name: max_batting_rbi_to_date
+        sql: batting_rbi_to_date
+        type: max
+        title: "Season RBI (as of latest date in range)"
+
+      - name: max_batting_avg_to_date
+        sql: batting_avg_to_date
+        type: max
+        title: "Season Batting Avg (as of latest date in range)"
+
+      - name: max_pitching_strikeouts_to_date
+        sql: pitching_strikeouts_to_date
+        type: max
+        title: "Season Pitching Strikeouts (as of latest date in range)"
+
+      - name: max_pitching_era_to_date
+        sql: pitching_era_to_date
+        type: max
+        title: "Season ERA (as of latest date in range)"
+
+    pre_aggregations:
+      # Deliberately left empty. This table's own grain already IS a
+      # rollup (cumulative-to-date), and its "totals" only mean anything
+      # via max() within a player+season, not sum() -- a Cube
+      # pre-aggregation defined the usual way (summing measures into a
+      # rollup) would misrepresent this table's data. Pre-aggregate
+      # dim_player_stats (the per-game source) instead if a cache is
+      # needed here.

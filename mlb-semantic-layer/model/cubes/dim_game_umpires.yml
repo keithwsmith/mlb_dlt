@@ -1,0 +1,63 @@
+cubes:
+  - name: dim_game_umpires
+    sql_table: silver.dim_game_umpires
+    data_source: default
+    title: "Game Umpire"
+    description: "One row per umpire assignment per game (multiple rows per game_pk -- one per official_type: Home Plate, First Base, etc.). Joins many_to_one to dim_games."
+
+    joins:
+      - name: dim_games
+        sql: "{CUBE}.game_pk = {dim_games.game_pk}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: game_umpire_key
+        sql: game_umpire_key
+        type: string
+        primary_key: true
+        public: false
+        # NOTE: this key's hash includes _dlt_load_id (see model header) --
+        # meaning a re-loaded/corrected umpire record for a game that's
+        # already loaded will generate a NEW key rather than overwrite the
+        # existing row, since incremental_strategy has nothing to actually
+        # merge on. Worth checking dw.umpires for duplicate
+        # (game_pk, official_id, official_type) combinations with
+        # different load_ids if row counts ever look inflated.
+
+      - name: game_pk
+        sql: game_pk
+        type: number
+
+      - name: official_id
+        sql: official_id
+        type: number
+        public: false
+
+      - name: full_name
+        sql: full_name
+        type: string
+        title: "Umpire"
+
+      - name: official_type
+        sql: official_type
+        type: string
+        title: "Position"
+
+      - name: load_id
+        sql: load_id
+        type: string
+        public: false
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Umpire Assignments"
+
+      - name: distinct_umpires
+        sql: official_id
+        type: count_distinct
+        title: "Distinct Umpires"
+
+    pre_aggregations:
+      # Deliberately left empty -- no date/time column of its own here;
+      # a rollup would need to pull game_date in via the dim_games join.

@@ -1,0 +1,94 @@
+cubes:
+  - name: int_player_game_stats
+    sql_table: silver.int_player_game_stats
+    data_source: default
+
+    joins:
+      - name: dim_teams
+        # FAN-OUT RISK: no season column currently exposed here to
+        # complete dim_teams' real (team_id, season) compound key. This
+        # cube also looks like an unreviewed auto-scaffold overall (most
+        # of int_player_game_stats.sql's numeric stat columns are
+        # missing) -- needs a proper pass like int_pitches_enriched got.
+        sql: "{CUBE}.team_id = {dim_teams.team_id}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: game_pk
+        sql: game_pk
+        type: number
+        primary_key: true
+        # Added back -- was missing entirely. This model's real grain is
+        # (game_pk, player_id), confirmed from dim_player_stats (which is
+        # built directly from this model with that same composite key).
+
+      - name: player_id
+        sql: player_id
+        type: number
+        primary_key: true
+
+      - name: batting_avg_raw
+        sql: batting_avg_raw
+        type: string
+
+      - name: first_pitch_v_text
+        sql: first_pitch__v_text
+        type: string
+        title: First Pitch  V Text
+
+      - name: game_type_desc
+        sql: game_type_desc
+        type: string
+
+      - name: is_home
+        sql: is_home
+        type: string
+
+      - name: opponent_team_name
+        sql: opponent_team_name
+        type: string
+
+      - name: pitching_era_raw
+        sql: pitching_era_raw
+        type: string
+
+      - name: player_name
+        sql: player_name
+        type: string
+
+      - name: position_abbreviation
+        sql: position_abbreviation
+        type: string
+
+      - name: position_code
+        sql: position_code
+        type: string
+
+      - name: position_name
+        sql: position_name
+        type: string
+
+      - name: team_name
+        sql: team_name
+        type: string
+
+      - name: first_pitch
+        sql: first_pitch
+        type: time
+
+      - name: game_date
+        sql: game_date
+        type: time
+
+      - name: game_datetime
+        sql: game_datetime
+        type: time
+
+    measures:
+      - name: count
+        type: count
+
+    pre_aggregations:
+      # Pre-aggregation definitions go here.
+      # Learn more in the documentation: https://cube.dev/docs/caching/pre-aggregations/getting-started
+

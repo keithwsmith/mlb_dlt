@@ -1,0 +1,318 @@
+cubes:
+  - name: dim_team_standings
+    sql_table: silver.dim_team_standings
+    data_source: default
+    title: "Team Standings"
+    description: "One row per team per completed game -- the general-purpose standings fact. is_win/is_loss/is_tie are 0/1 flags, safe to SUM() directly (per the model's own header comment) -- that's the intended way to compute win/loss totals, not filtering on `result`."
+
+    joins:
+      - name: dim_teams
+        # Compound join -- dim_teams' real unique key is (team_id, season),
+        # not team_id alone, same reasoning as every other join to it in
+        # this project.
+        sql: "{CUBE}.team_id = {dim_teams.team_id} AND {CUBE}.season = {dim_teams.season}"
+        relationship: many_to_one
+
+      - name: dim_venue
+        # Cube name not confirmed from here -- verify against dim_venue.yml.
+        sql: "{CUBE}.venue_id = {dim_venue.venue_id}"
+        relationship: many_to_one
+
+      - name: opponent_teams
+        # Extends dim_teams under a distinct name -- see opponent_teams.yml.
+        sql: "{CUBE}.opponent_team_id = {opponent_teams.team_id} AND {CUBE}.season = {opponent_teams.season}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: game_pk
+        sql: game_pk
+        type: number
+        primary_key: true
+        # Composite grain with team_id below -- matches this model's
+        # documented grain ("one row per team per completed game").
+
+      - name: team_id
+        sql: team_id
+        type: number
+        primary_key: true
+        public: false
+
+      - name: season
+        sql: season
+        type: number
+
+      - name: game_type_desc
+        sql: game_type_desc
+        type: string
+        title: "Game Type"
+
+      - name: game_date
+        sql: game_date
+        type: time
+        title: "Game Date"
+        description: "For listing/filtering/ordering by each game's date (e.g. 'list every game X played against Y'), put this in `dimensions`, NOT `timeDimensions` -- querying a time-typed field via `timeDimensions` with a `granularity` set renames it in the response to `game_date.<granularity>` (e.g. `game_date.day`), not plain `game_date`, which will read back as missing/None to any code expecting the plain key. Only reach for `timeDimensions` + `granularity` when the question actually asks for bucketing/grouping games into day/week/month periods; for anything else (a plain per-row date, a date-range filter, sorting by date), use `dimensions: [\"dim_team_standings.game_date\"]` with no granularity."
+
+      - name: game_datetime
+        sql: game_datetime
+        type: time
+        public: false
+        description: "Same timeDimensions-vs-dimensions caveat as game_date above applies here -- querying this with a granularity renames the response key to game_datetime.<granularity>."
+
+      - name: team_name
+        sql: team_name
+        type: string
+        title: "Team"
+
+      - name: opponent_team_id
+        sql: opponent_team_id
+        type: number
+        public: false
+
+      - name: opponent_team_name
+        sql: opponent_team_name
+        type: string
+        title: "Opponent"
+
+      - name: is_home
+        sql: is_home
+        type: number
+        title: "Is Home Game?"
+
+      - name: venue_id
+        sql: venue_id
+        type: number
+        public: false
+
+      - name: team_score
+        sql: team_score
+        type: number
+        title: "Team Score"
+
+      - name: opponent_score
+        sql: opponent_score
+        type: number
+        title: "Opponent Score"
+
+      - name: result
+        sql: result
+        type: string
+        title: "Result (W/L/T)"
+
+      - name: run_diff
+        sql: "{CUBE}.team_score - {CUBE}.opponent_score"
+        type: number
+        title: "Run Differential (Game)"
+        description: "Per-game run differential (team_score - opponent_score) for this row. Row-level counterpart to the run_differential measure below, which sums this across whatever filters/grouping are applied -- use this one when you need to filter or group on an individual game's margin (e.g. one-run games), not the aggregate."
+
+      - name: is_one_run_game
+        sql: "CASE WHEN ABS({CUBE}.team_score - {CUBE}.opponent_score) = 1 THEN 1 ELSE 0 END"
+        type: number
+        title: "Is One-Run Game?"
+        description: "1 if this team's game was decided by exactly one run, else 0. Mirrors dim_games.is_one_run_game but at team grain, so it can be grouped/filtered alongside team_name -- dim_games has the flag but no unified team dimension (only home_team_name/away_team_name), which is why 'which team had the most one-run games' can't be answered from that cube in a single query."
+
+      - name: is_win
+        sql: is_win
+        type: number
+        public: false
+        # Prefer the win_rate/total_wins measures below over filtering on
+        # this directly -- it's here mainly to back those measures.
+
+      - name: is_loss
+        sql: is_loss
+        type: number
+        public: false
+
+      - name: is_tie
+        sql: is_tie
+        type: number
+        public: false
+
+      - name: double_header
+        sql: double_header
+        type: string
+        title: "Doubleheader Code"
+        description: "Raw per-game doubleheader code as stored (was public:false / hidden -- unhiding it since it's needed for doubleheader stats). CONFIRM THE ACTUAL VALUES via get_schema/Playground before relying on is_doubleheader below -- not verified from this file alone. MLB's own API typically uses 'N' (not a doubleheader), 'Y' (game 1 of a same-day doubleheader), 'S' (game 2, split doubleheader), but this column's real stored values haven't been confirmed against this table."
+
+      - name: is_doubleheader
+        sql: "CASE WHEN {CUBE}.double_header IS NOT NULL AND UPPER({CUBE}.double_header) <> 'N' THEN 1 ELSE 0 END"
+        type: number
+        title: "Is Doubleheader Game?"
+        description: "0/1 flag derived from double_header above (anything other than 'N'/null counts as a doubleheader game) -- added so 'doubleheader vs single-game' win pct can be grouped with a plain 0/1 dimension instead of every consumer re-deriving this from the raw code. Depends on the same unconfirmed-values caveat as double_header -- verify real stored values before trusting this."
+
+      - name: day_night
+        sql: day_night
+        type: string
+        title: "Day/Night"
+        description: "Already fully usable for day-vs-night win% with no new field needed: dimensions=[day_night], measures=[win_pct] (or total_wins/count) gives day and night as two separate rows. CONFIRM the actual stored values ('day'/'night' vs 'D'/'N' vs something else) via get_schema/Playground before filtering on a specific literal."
+
+      - name: start_hour
+        sql: start_hour
+        type: number
+        title: "Start Hour"
+
+      - name: is_interleague
+        sql: is_interleague
+        type: number
+        title: "Interleague?"
+        description: "Already fully usable for interleague-vs-not win% with no new field needed: dimensions=[is_interleague], measures=[win_pct] gives 0 and 1 as two separate rows -- same pattern as day_night above."
+
+      - name: series_id
+        sql: series_id
+        type: string
+        public: false
+
+      - name: games_in_series
+        sql: games_in_series
+        type: number
+        public: false
+
+      - name: series_game_number
+        sql: series_game_number
+        type: number
+        title: "Game # in Series"
+        # Moved from a broken `sum` measure -- an ordinal position within
+        # a series, not something to total across rows.
+        # Already fully usable for "win% of game 1/2/3 of a series" with
+        # no new field needed: dimensions=[series_game_number],
+        # measures=[win_pct], filtered on games_in_series for the series
+        # length you care about (e.g. =3 for a 3-game series) -- gives
+        # one row per game number with its own win_pct. is_series_opener/
+        # is_series_finale below are just convenience wrappers for people
+        # asking in words ("series opener", "series finale") rather than
+        # by number.
+
+      - name: is_series_opener
+        sql: "CASE WHEN {CUBE}.series_game_number = 1 THEN 1 ELSE 0 END"
+        type: number
+        title: "Is Series Opener?"
+
+      - name: is_series_finale
+        sql: "CASE WHEN {CUBE}.series_game_number = {CUBE}.games_in_series THEN 1 ELSE 0 END"
+        type: number
+        title: "Is Series Finale?"
+
+      # ── Series-outcome fields (added 2026-09-04 for "series win %") ──
+      # dim_team_standings' grain is one row per team per GAME, not per
+      # series -- a 3-game series between two teams produces 6 rows (3 per
+      # team). "Did team X win the series" isn't a per-row fact; it
+      # depends on comparing that team's wins to its losses across every
+      # game IN that series, which needs a window function partitioned by
+      # (team_id, series_id, season) -- season is included in the
+      # partition for the same reason every other join/key in this file
+      # needs it: series_id is very unlikely to be globally unique across
+      # seasons on its own.
+      #
+      # CAVEAT: this is only correct if a query includes ALL of a team's
+      # games for a given series -- a date-range filter that clips a
+      # series mid-way (e.g. "games in April" when a series spans April
+      # 30 - May 2) will undercount that team's wins/losses for the
+      # partition and can misclassify the series winner. Fine for
+      # season-long or full-series queries; not reliable inside a
+      # partial-date-range filter.
+      - name: series_wins_for_team
+        sql: "SUM({CUBE}.is_win) OVER (PARTITION BY {CUBE}.team_id, {CUBE}.series_id, {CUBE}.season)"
+        type: number
+        public: false
+        description: "Window aggregate: this team's total wins across every game in this series (same value repeated on every row of that team's series). Backs series_won below -- not meant to be queried directly."
+
+      - name: series_losses_for_team
+        sql: "SUM({CUBE}.is_loss) OVER (PARTITION BY {CUBE}.team_id, {CUBE}.series_id, {CUBE}.season)"
+        type: number
+        public: false
+        description: "Same window shape as series_wins_for_team, for losses. Compared directly against wins (not derived from games_in_series minus wins) so tied games don't get miscounted as a loss for either side."
+
+      - name: series_won
+        sql: "CASE WHEN SUM({CUBE}.is_win) OVER (PARTITION BY {CUBE}.team_id, {CUBE}.series_id, {CUBE}.season) > SUM({CUBE}.is_loss) OVER (PARTITION BY {CUBE}.team_id, {CUBE}.series_id, {CUBE}.season) THEN 1 ELSE 0 END"
+        type: number
+        title: "Won the Series?"
+        description: "1 on every row of this team's series if this team won more games than it lost in that series, else 0 (a series split evenly, e.g. 2-2, correctly scores 0 for both teams -- nobody 'won' it). This is a per-GAME-row flag, repeated games_in_series times per series -- do not SUM() this directly to count series won, it will overcount by the series length. Use series_won_count below instead, which counts DISTINCT series."
+
+      - name: series_key
+        sql: "CONCAT(CAST({CUBE}.team_id AS VARCHAR(20)), '-', {CUBE}.series_id, '-', CAST({CUBE}.season AS VARCHAR(10)))"
+        type: string
+        public: false
+        description: "Composite (team, series, season) identifier used only so distinct_series/series_won_count below can COUNT(DISTINCT ...) series instead of games -- this cube's grain is per-game, so a plain count()/sum() would count every series games_in_series times over."
+
+    measures:
+      - name: count
+        type: count
+        title: "Games Played"
+
+      - name: total_wins
+        sql: is_win
+        type: sum
+        title: "Wins"
+
+      - name: total_losses
+        sql: is_loss
+        type: sum
+        title: "Losses"
+
+      - name: total_ties
+        sql: is_tie
+        type: sum
+        title: "Ties"
+
+      - name: win_pct
+        type: number
+        title: "Win %"
+        sql: "1.0 * {total_wins} / NULLIF({count}, 0)"
+        format: percent
+
+      - name: total_runs_scored
+        sql: team_score
+        type: sum
+        title: "Total Runs Scored"
+
+      - name: total_runs_allowed
+        sql: opponent_score
+        type: sum
+        title: "Total Runs Allowed"
+
+      - name: avg_runs_scored
+        sql: team_score
+        type: avg
+        title: "Average Runs Scored"
+
+      - name: avg_runs_allowed
+        sql: opponent_score
+        type: avg
+        title: "Average Runs Allowed"
+
+      - name: run_differential
+        type: number
+        title: "Run Differential"
+        sql: "{total_runs_scored} - {total_runs_allowed}"
+
+      - name: one_run_games
+        sql: is_one_run_game
+        type: sum
+        title: "One-Run Games"
+        description: "Count of games (for the team_name in dimensions) decided by exactly one run. E.g. to find which team had the most: dimensions=[team_name], measures=[one_run_games], order by one_run_games desc, limit 1."
+
+      - name: distinct_series
+        sql: series_key
+        type: count_distinct
+        title: "Series Played"
+        description: "Counts distinct (team, series, season) combinations, not games -- always group by team_name (or filter to one team) when using this, same as any other measure here, otherwise it counts series across every team at once."
+
+      - name: series_won_count
+        sql: series_key
+        type: count_distinct
+        filters:
+          - sql: "{CUBE}.series_won = 1"
+        title: "Series Won"
+        description: "Distinct series where series_won=1 for the team_name in dimensions/filters -- see series_won's own description for what counts as winning a series (and the note on why a plain sum of series_won would overcount)."
+
+      - name: series_win_pct
+        type: number
+        title: "Series Win %"
+        format: percent
+        sql: "1.0 * {series_won_count} / NULLIF({distinct_series}, 0)"
+        description: "e.g. dimensions=[team_name], measures=[series_win_pct], filters=[season=2025] gives each team's share of series won that season. Same partial-date-range caveat as series_won applies here."
+
+    pre_aggregations:
+      # Real fact-shaped table with a genuine game_date -- good rollup
+      # candidate, e.g. season standings by team. Left empty for now;
+      # happy to fill in once there's a concrete query pattern to match
+      # (same reasoning as dim_games/int_pitches_enriched).

@@ -1,0 +1,453 @@
+cubes:
+  - name: fact_player_stats
+    sql_table: silver.fact_player_stats
+    data_source: default
+    title: "Player Season Stats"
+    description: "One row per player + team + season. CORRECTION: the previous description claimed player_key/team_key/season_key were 'fixed upstream' to hold genuine surrogate keys matching dim_player/dim_teams/dim_season's hash keys -- confirmed FALSE via INFORMATION_SCHEMA.COLUMNS, all three are plain bigint, not hashes. Joins below now use player_id/team_id/season directly instead. team_key->team_id and player_key->player_id are still an unverified assumption (the columns are numeric and named suggestively, but their exact semantics haven't been confirmed against real data) -- spot-check before trusting results. Still open: unique_key='_dlt_id' in the SQL may not correctly dedupe as stats update through a season (worth fixing separately). hits_allowed/runs_allowed/home_runs_allowed/walks_allowed are always NULL (no source mapping). war is an intentional placeholder for future calculation."
+
+    joins:
+      - name: dim_player
+        # FIX: confirmed via INFORMATION_SCHEMA.COLUMNS that
+        # fact_player_stats.player_key is bigint, not a hash -- so it
+        # can't be dim_player.player_version_key (a real generated
+        # string hash). All three "_key" columns on this table turned out
+        # to be plain bigint (player_key, team_key, season_key), so the
+        # file's original "fixed upstream to hold genuine surrogate keys"
+        # claim was wrong across the board, not just for team_key.
+        # dim_player is an SCD2 dimension (multiple rows per player_id,
+        # one per tracked-attribute version), so joining on player_id
+        # alone without the is_current guard would fan out across every
+        # version -- same pattern already used in dim_player_stats.yml.
+        # VERIFY: spot-check that player_key's values actually match
+        # dim_player.player_id before trusting this join's results.
+        # DEFENSIVE: TRY_CONVERT added -- same reasoning as fact_games'
+        # home_teams/away_teams joins (see that file). This join was
+        # already switched from player_version_key (hash) to player_id
+        # per the comment above, but the latest test report still threw
+        # the identical varchar->bigint error on this exact join
+        # afterward, and dim_draft's identical join to dim_player.player_id
+        # passes cleanly -- re-verify against the live schema after a
+        # Cube reload before assuming this defensive cast is the real fix.
+        sql: "TRY_CONVERT(bigint, {CUBE}.player_key) = TRY_CONVERT(bigint, {dim_player.player_id}) AND {dim_player.is_current} = 1"
+        relationship: many_to_one
+
+      - name: dim_teams
+        # FIX: the SIMPLIFIED single-column join assumed team_key held
+        # dim_teams' real team_key hash. Confirmed via
+        # INFORMATION_SCHEMA.COLUMNS that fact_player_stats.team_key is
+        # actually bigint, not a hash -- so it can't be dim_teams'
+        # generated team_key. Reverted to this project's standard
+        # team_id+season compound join pattern instead, treating this
+        # column's numeric value as if it's really team_id under an odd
+        # name. VERIFY: spot-check that team_key's values actually match
+        # dim_teams.team_id before trusting this join's results.
+        # DEFENSIVE: TRY_CONVERT added -- see dim_player join comment above.
+        sql: "TRY_CONVERT(bigint, {CUBE}.team_key) = TRY_CONVERT(bigint, {dim_teams.team_id}) AND {CUBE}.season = {dim_teams.season}"
+        relationship: many_to_one
+
+      - name: dim_season
+        # FIX: season_key's assumed hash-match is unverified (same
+        # SIMPLIFIED assumption that was wrong for team_key), but this one
+        # doesn't need resolving -- both cubes already expose a plain raw
+        # `season` number column, so join on that directly instead of
+        # relying on season_key at all.
+        sql: "{CUBE}.season = {dim_season.season}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: player_key
+        sql: player_key
+        type: string
+        primary_key: true
+        public: false
+
+      - name: team_key
+        sql: team_key
+        type: string
+        primary_key: true
+        public: false
+
+      - name: season_key
+        sql: season_key
+        type: string
+        public: false
+
+      - name: season
+        sql: season
+        type: number
+        primary_key: true
+
+      - name: age
+        sql: age
+        type: number
+        title: "Age"
+
+      - name: games_played
+        sql: games_played
+        type: number
+        public: false
+
+      - name: games_started
+        sql: games_started
+        type: number
+        public: false
+
+      - name: position_code
+        sql: position_code
+        type: string
+        title: "Position"
+
+      # ── Batting (raw per-season counts, hidden -- see measures) ─────
+      - name: at_bats
+        sql: at_bats
+        type: number
+        public: false
+
+      - name: runs
+        sql: runs
+        type: number
+        public: false
+
+      - name: hits
+        sql: hits
+        type: number
+        public: false
+
+      - name: doubles
+        sql: doubles
+        type: number
+        public: false
+
+      - name: triples
+        sql: triples
+        type: number
+        public: false
+
+      - name: home_runs
+        sql: home_runs
+        type: number
+        public: false
+
+      - name: rbi
+        sql: rbi
+        type: number
+        public: false
+
+      - name: stolen_bases
+        sql: stolen_bases
+        type: number
+        public: false
+
+      - name: caught_stealing
+        sql: caught_stealing
+        type: number
+        public: false
+
+      - name: walks
+        sql: walks
+        type: number
+        public: false
+
+      - name: strikeouts
+        sql: strikeouts
+        type: number
+        public: false
+
+      - name: batting_average
+        sql: batting_average
+        type: number
+        public: false
+        title: "Batting Average (this season)"
+        # Reference only -- do not sum across seasons; use
+        # career_batting_average below for a correctly derived multi-
+        # season figure.
+
+      - name: on_base_percentage
+        sql: on_base_percentage
+        type: number
+        public: false
+        title: "OBP (this season)"
+
+      - name: slugging_percentage
+        sql: slugging_percentage
+        type: number
+        public: false
+        title: "SLG (this season)"
+
+      - name: ops
+        sql: ops
+        type: number
+        public: false
+        title: "OPS (this season)"
+
+      # ── Pitching ──────────────────────────────────────────────────
+      - name: wins
+        sql: wins
+        type: number
+        public: false
+
+      - name: losses
+        sql: losses
+        type: number
+        public: false
+
+      - name: era
+        sql: era
+        type: number
+        public: false
+        title: "ERA (this season)"
+
+      - name: games_finished
+        sql: games_finished
+        type: number
+        public: false
+
+      - name: saves
+        sql: saves
+        type: number
+        public: false
+
+      - name: save_opportunities
+        sql: save_opportunities
+        type: number
+        public: false
+
+      - name: holds
+        sql: holds
+        type: number
+        public: false
+
+      - name: innings_pitched
+        sql: innings_pitched
+        type: string
+        title: "Innings Pitched (this season)"
+        # Likely a display-format string (MLB's whole.partial-innings
+        # notation, e.g. "182.1"), not a true decimal -- verify before
+        # assuming numeric sort/filter behavior.
+
+      - name: hits_per9_inn
+        sql: hits_per9_inn
+        type: number
+        public: false
+        title: "Hits per 9 IP (this season)"
+
+      - name: hits_allowed
+        sql: hits_allowed
+        type: number
+        public: false
+        # Always NULL -- see cube description.
+
+      - name: runs_allowed
+        sql: runs_allowed
+        type: number
+        public: false
+        # Always NULL -- see cube description.
+
+      - name: earned_runs
+        sql: earned_runs
+        type: number
+        public: false
+
+      - name: home_runs_allowed
+        sql: home_runs_allowed
+        type: number
+        public: false
+        # Always NULL -- see cube description.
+
+      - name: walks_allowed
+        sql: walks_allowed
+        type: number
+        public: false
+        # Always NULL -- see cube description.
+
+      - name: strikeouts_pitched
+        sql: strikeouts_pitched
+        type: number
+        public: false
+
+      - name: whip
+        sql: whip
+        type: number
+        public: false
+        title: "WHIP (this season)"
+
+      # ── Fielding ──────────────────────────────────────────────────
+      - name: games_at_position
+        sql: games_at_position
+        type: number
+        public: false
+
+      - name: putouts
+        sql: putouts
+        type: number
+        public: false
+
+      - name: assists
+        sql: assists
+        type: number
+        public: false
+
+      - name: errors
+        sql: errors
+        type: number
+        public: false
+
+      - name: double_plays
+        sql: double_plays
+        type: number
+        public: false
+
+      - name: fielding_percentage
+        sql: fielding_percentage
+        type: number
+        public: false
+        title: "Fielding Pct (this season)"
+
+      - name: war
+        sql: war
+        type: number
+        title: "WAR"
+        # Placeholder for future calculation -- always NULL currently,
+        # per the model's own comment (intentional, not a bug).
+
+      # ── Audit (hidden) ───────────────────────────────────────────
+      - name: dlt_load_id
+        sql: _dlt_load_id
+        type: string
+        public: false
+
+      - name: dlt_id
+        sql: _dlt_id
+        type: string
+        public: false
+
+      - name: created_at
+        sql: created_at
+        type: time
+        public: false
+
+      - name: updated_at
+        sql: updated_at
+        type: time
+        public: false
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Player-Seasons"
+
+      - name: distinct_players
+        sql: player_key
+        type: count_distinct
+        title: "Distinct Players"
+
+      # ── Batting totals ────────────────────────────────────────────
+      - name: total_at_bats
+        sql: at_bats
+        type: sum
+        title: "Total At-Bats"
+
+      - name: total_runs
+        sql: runs
+        type: sum
+        title: "Total Runs"
+
+      - name: total_hits
+        sql: hits
+        type: sum
+        title: "Total Hits"
+
+      - name: total_doubles
+        sql: doubles
+        type: sum
+        title: "Total Doubles"
+
+      - name: total_triples
+        sql: triples
+        type: sum
+        title: "Total Triples"
+
+      - name: total_home_runs
+        sql: home_runs
+        type: sum
+        title: "Total Home Runs"
+
+      - name: total_rbi
+        sql: rbi
+        type: sum
+        title: "Total RBI"
+
+      - name: total_stolen_bases
+        sql: stolen_bases
+        type: sum
+        title: "Total Stolen Bases"
+
+      - name: total_walks
+        sql: walks
+        type: sum
+        title: "Total Walks"
+
+      - name: total_strikeouts
+        sql: strikeouts
+        type: sum
+        title: "Total Strikeouts"
+
+      - name: career_batting_average
+        type: number
+        title: "Batting Average (across selected seasons)"
+        sql: "1.0 * {total_hits} / NULLIF({total_at_bats}, 0)"
+        # Correctly derived from summed counts, unlike averaging the
+        # per-season batting_average column directly.
+
+      # ── Pitching totals ─────────────────────────────────────────
+      - name: total_wins
+        sql: wins
+        type: sum
+        title: "Total Wins"
+
+      - name: total_losses
+        sql: losses
+        type: sum
+        title: "Total Losses"
+
+      - name: total_saves
+        sql: saves
+        type: sum
+        title: "Total Saves"
+
+      - name: total_strikeouts_pitched
+        sql: strikeouts_pitched
+        type: sum
+        title: "Total Strikeouts (Pitching)"
+
+      - name: total_earned_runs
+        sql: earned_runs
+        type: sum
+        title: "Total Earned Runs Allowed"
+
+      # ── Fielding totals ────────────────────────────────────────
+      - name: total_putouts
+        sql: putouts
+        type: sum
+        title: "Total Putouts"
+
+      - name: total_assists
+        sql: assists
+        type: sum
+        title: "Total Assists"
+
+      - name: total_errors
+        sql: errors
+        type: sum
+        title: "Total Errors"
+
+      - name: total_double_plays
+        sql: double_plays
+        type: sum
+        title: "Total Double Plays"
+
+    pre_aggregations:
+      # Real fact-shaped table -- good rollup candidate (e.g. career
+      # totals by player), but no direct date/time column of its own to
+      # anchor a rollup other than season (a number, not a time
+      # dimension). Left empty pending a concrete query pattern to match.

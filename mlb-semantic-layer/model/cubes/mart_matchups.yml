@@ -1,0 +1,24 @@
+cubes:
+  - name: mart_matchups
+    sql_table: silver.mart_matchups
+    data_source: default
+
+    joins: []
+
+    dimensions:
+      - name: load_id
+        sql: load_id
+        type: string
+
+    measures:
+      - name: count
+        type: count
+
+      - name: balls_total
+        sql: balls_total
+        type: sum
+
+    pre_aggregations:
+      # Pre-aggregation definitions go here.
+      # Learn more in the documentation: https://cube.dev/docs/caching/pre-aggregations/getting-started
+

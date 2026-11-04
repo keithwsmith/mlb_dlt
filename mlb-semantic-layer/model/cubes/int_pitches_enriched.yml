@@ -1,0 +1,582 @@
+cubes:
+  - name: int_pitches_enriched
+    sql_table: silver.int_pitches_enriched
+    data_source: default
+    title: "Pitch"
+    description: "One row per pitch, enriched with derived zone/swing/chase/whiff flags. IMPORTANT: has_location=0 means the tracking system missed this pitch's coordinates -- every zone-dependent flag (is_in_strike_zone, is_chase, is_zone_swing, is_zone_whiff, is_edge_pitch, is_called_strike_outside_zone, is_ball_inside_zone) is NULL, not 0, in that case. Use avg() on these flags for rate stats (chase_rate, whiff_rate, etc.) -- avg() correctly ignores NULLs, so ungraded pitches don't silently deflate the rate."
+
+    joins:
+      - name: dim_games
+        sql: "{CUBE}.game_pk = {dim_games.game_pk}"
+        relationship: many_to_one
+
+      - name: dim_pitch_type
+        sql: "{CUBE}.pitch_type_code = {dim_pitch_type.pitch_type_code}"
+        relationship: many_to_one
+
+      # NOT joined: dim_season -- already reachable transitively via
+      # dim_games (which joins dim_season itself), so a second direct
+      # join here would create an ambiguous/duplicate path in Cube's
+      # join graph rather than adding anything.
+      #
+      # NOT joined: dim_zone -- zone_description/zone_region are already
+      # denormalized below (the SQL LEFT JOINs dim_zone internally).
+      # Only worth adding if dim_zone has other attributes not already
+      # pulled in here -- didn't have that file to check.
+
+    dimensions:
+      - name: event_id
+        sql: event_id
+        type: string
+        primary_key: true
+        public: false
+
+      - name: game_pk
+        sql: game_pk
+        type: number
+        public: false
+
+      - name: season
+        sql: season
+        type: number
+
+      - name: at_bat_index
+        sql: at_bat_index
+        type: number
+        public: false
+
+      - name: play_id
+        sql: play_id
+        type: string
+        public: false
+
+      - name: pfx_id
+        sql: pfx_id
+        type: string
+        public: false
+
+      - name: event_index
+        sql: event_index
+        type: number
+        public: false
+
+      - name: pitch_number
+        sql: pitch_number
+        type: number
+        title: "Pitch # (in at-bat)"
+        # Moved from a broken `sum` measure in the auto-scaffold -- this
+        # is an ordinal position within an at-bat, not something to total
+        # across many pitches.
+
+      - name: start_time
+        sql: start_time
+        type: time
+
+      - name: end_time
+        sql: end_time
+        type: time
+
+      # ── Event / outcome ──────────────────────────────────────────
+      - name: event_type
+        sql: event_type
+        type: string
+        title: "Event Type"
+
+      - name: is_pitch
+        sql: is_pitch
+        type: number
+        public: false
+
+      - name: is_in_play
+        sql: is_in_play
+        type: number
+        title: "In Play?"
+
+      - name: is_in_play_detail
+        sql: is_in_play_detail
+        type: string
+        public: false
+
+      - name: pitch_result_code
+        sql: pitch_result_code
+        type: string
+        public: false
+
+      - name: pitch_result_description
+        sql: pitch_result_description
+        type: string
+        title: "Pitch Result"
+
+      - name: call_code
+        sql: call_code
+        type: string
+        public: false
+
+      - name: call_description
+        sql: call_description
+        type: string
+        title: "Call"
+
+      - name: ball_color
+        sql: ball_color
+        type: string
+        public: false
+
+      - name: is_strike
+        sql: is_strike
+        type: number
+        title: "Is Strike?"
+
+      - name: is_ball
+        sql: is_ball
+        type: number
+        title: "Is Ball?"
+
+      - name: is_out
+        sql: is_out
+        type: number
+        title: "Is Out?"
+
+      # ── Count context ────────────────────────────────────────────
+      - name: balls
+        sql: balls
+        type: number
+
+      - name: strikes
+        sql: strikes
+        type: number
+
+      - name: outs_when_up
+        sql: outs_when_up
+        type: number
+        title: "Outs"
+
+      - name: is_two_strike
+        sql: is_two_strike
+        type: number
+        title: "Two-Strike Count?"
+
+      - name: is_first_pitch
+        sql: is_first_pitch
+        type: number
+        title: "First Pitch of AB?"
+
+      - name: count_leverage
+        sql: count_leverage
+        type: string
+        title: "Count Leverage"
+
+      # ── Batter ────────────────────────────────────────────────────
+      - name: batter_id
+        sql: batter_id
+        type: number
+        public: false
+
+      - name: batter_name
+        sql: batter_name
+        type: string
+        title: "Batter"
+
+      - name: batter_side
+        sql: batter_side
+        type: string
+        title: "Batter Side"
+
+      # ── Pitcher ───────────────────────────────────────────────────
+      - name: pitcher_id
+        sql: pitcher_id
+        type: number
+        public: false
+
+      - name: pitcher_name
+        sql: pitcher_name
+        type: string
+        title: "Pitcher"
+
+      - name: pitcher_hand
+        sql: pitcher_hand
+        type: string
+        title: "Pitcher Hand"
+
+      # ── Pitch type ────────────────────────────────────────────────
+      - name: pitch_type_code
+        sql: pitch_type_code
+        type: string
+        public: false
+        # Redundant with dim_pitch_type join above -- kept for
+        # convenience/reference.
+
+      - name: pitch_type_description
+        sql: pitch_type_description
+        type: string
+        title: "Pitch Type"
+
+      - name: pitch_trail_color
+        sql: pitch_trail_color
+        type: string
+        public: false
+
+      - name: pitch_type_confidence
+        sql: pitch_type_confidence
+        type: number
+        public: false
+
+      # ── Pitch physics / tracking ─────────────────────────────────
+      - name: release_speed
+        sql: release_speed
+        type: number
+        title: "Release Speed"
+
+      - name: plate_speed
+        sql: plate_speed
+        type: number
+        title: "Speed at Plate"
+
+      - name: plate_time
+        sql: plate_time
+        type: number
+        public: false
+
+      - name: extension
+        sql: extension
+        type: number
+        title: "Extension"
+
+      - name: plate_x
+        sql: plate_x
+        type: number
+        public: false
+
+      - name: plate_z
+        sql: plate_z
+        type: number
+        public: false
+
+      - name: release_pos_x
+        sql: release_pos_x
+        type: number
+        public: false
+
+      - name: release_pos_y
+        sql: release_pos_y
+        type: number
+        public: false
+
+      - name: release_pos_z
+        sql: release_pos_z
+        type: number
+        public: false
+
+      - name: vx0
+        sql: vx0
+        type: number
+        public: false
+
+      - name: vy0
+        sql: vy0
+        type: number
+        public: false
+
+      - name: vz0
+        sql: vz0
+        type: number
+        public: false
+
+      - name: ax
+        sql: ax
+        type: number
+        public: false
+
+      - name: ay
+        sql: ay
+        type: number
+        public: false
+
+      - name: az
+        sql: az
+        type: number
+        public: false
+
+      - name: pfx_x
+        sql: pfx_x
+        type: number
+        public: false
+
+      - name: pfx_z
+        sql: pfx_z
+        type: number
+        public: false
+
+      - name: break_angle
+        sql: break_angle
+        type: number
+        public: false
+
+      - name: break_length
+        sql: break_length
+        type: number
+        public: false
+
+      - name: break_y
+        sql: break_y
+        type: number
+        public: false
+
+      - name: break_vertical
+        sql: break_vertical
+        type: number
+        public: false
+
+      - name: break_vertical_induced
+        sql: break_vertical_induced
+        type: number
+        public: false
+
+      - name: break_horizontal
+        sql: break_horizontal
+        type: number
+        public: false
+
+      - name: spin_rate
+        sql: spin_rate
+        type: number
+        title: "Spin Rate"
+
+      - name: spin_direction
+        sql: spin_direction
+        type: number
+        public: false
+
+      - name: zone
+        sql: zone
+        type: number
+        public: false
+        # Coalesced to 99 for missing tracking data (see SQL) -- raw
+        # numeric zone id, use zone_description/zone_region below instead.
+
+      - name: sz_top
+        sql: sz_top
+        type: number
+        public: false
+
+      - name: sz_bot
+        sql: sz_bot
+        type: number
+        public: false
+
+      - name: sz_width
+        sql: sz_width
+        type: number
+        public: false
+
+      - name: sz_depth
+        sql: sz_depth
+        type: number
+        public: false
+
+      - name: zone_description
+        sql: zone_description
+        type: string
+        title: "Zone"
+
+      - name: zone_region
+        sql: zone_region
+        type: string
+        title: "Zone Region"
+
+      # ── Batted ball ───────────────────────────────────────────────
+      - name: exit_velocity
+        sql: exit_velocity
+        type: number
+        title: "Exit Velocity"
+
+      - name: launch_angle
+        sql: launch_angle
+        type: number
+        title: "Launch Angle"
+
+      - name: hit_distance
+        sql: hit_distance
+        type: number
+        title: "Hit Distance"
+
+      # ── Data quality flag ────────────────────────────────────────
+      - name: has_location
+        sql: has_location
+        type: number
+        title: "Has Location Data?"
+        # See cube description above -- gates every zone-dependent flag
+        # below between NULL (no data) and a real 0/1.
+
+      - name: has_review
+        sql: has_review
+        type: number
+        public: false
+
+      # ── Zone / swing / chase / whiff flags (the analytical core) ──
+      - name: is_in_zone
+        sql: is_in_zone
+        type: number
+        title: "In Zone? (dim_zone classification)"
+        # Coalesced to 0, NOT nullable like is_in_strike_zone below --
+        # this comes from dim_zone's classification of the raw `zone`
+        # integer (1-14 grid), a DIFFERENT methodology than
+        # is_in_strike_zone's direct plate_x/plate_z-vs-strike-zone-edges
+        # computation. The two can legitimately disagree near the edges.
+
+      - name: is_in_strike_zone
+        sql: is_in_strike_zone
+        type: number
+        title: "In Strike Zone? (coordinate-based)"
+
+      - name: is_swing
+        sql: is_swing
+        type: number
+        title: "Swing?"
+
+      - name: is_whiff
+        sql: is_whiff
+        type: number
+        title: "Whiff?"
+
+      - name: is_called_strike
+        sql: is_called_strike
+        type: number
+        title: "Called Strike?"
+
+      - name: is_foul
+        sql: is_foul
+        type: number
+        title: "Foul?"
+
+      - name: is_chase
+        sql: is_chase
+        type: number
+        title: "Chase?"
+
+      - name: is_zone_swing
+        sql: is_zone_swing
+        type: number
+        title: "Zone Swing?"
+
+      - name: is_zone_whiff
+        sql: is_zone_whiff
+        type: number
+        title: "Zone Whiff?"
+
+      - name: is_edge_pitch
+        sql: is_edge_pitch
+        type: number
+        title: "Edge Pitch?"
+
+      - name: is_called_strike_outside_zone
+        sql: is_called_strike_outside_zone
+        type: number
+        title: "Missed Call: Strike Outside Zone?"
+
+      - name: is_ball_inside_zone
+        sql: is_ball_inside_zone
+        type: number
+        title: "Missed Call: Ball Inside Zone?"
+
+      # ── Audit (hidden) ───────────────────────────────────────────
+      - name: load_id
+        sql: load_id
+        type: string
+        public: false
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Pitches"
+
+      # ── Rate stats -- avg() of a 0/1/NULL flag is a rate, and
+      #    correctly excludes has_location=0 pitches from the
+      #    denominator since those flags are NULL, not 0. ─────────────
+      - name: swing_rate
+        sql: is_swing
+        type: avg
+        title: "Swing Rate"
+
+      - name: whiff_rate
+        sql: is_whiff
+        type: avg
+        title: "Whiff Rate"
+
+      - name: chase_rate
+        sql: is_chase
+        type: avg
+        title: "Chase Rate"
+
+      - name: zone_swing_rate
+        sql: is_zone_swing
+        type: avg
+        title: "Zone Swing Rate"
+
+      - name: zone_whiff_rate
+        sql: is_zone_whiff
+        type: avg
+        title: "Zone Whiff Rate"
+
+      - name: edge_rate
+        sql: is_edge_pitch
+        type: avg
+        title: "Edge Pitch Rate"
+
+      - name: called_strike_rate
+        sql: is_called_strike
+        type: avg
+        title: "Called Strike Rate"
+
+      - name: zone_rate
+        sql: is_in_strike_zone
+        type: avg
+        title: "Zone Rate"
+
+      - name: missed_call_favoring_pitcher_rate
+        sql: is_called_strike_outside_zone
+        type: avg
+        title: "Missed-Call Rate Favoring Pitcher"
+
+      - name: missed_call_favoring_batter_rate
+        sql: is_ball_inside_zone
+        type: avg
+        title: "Missed-Call Rate Favoring Batter"
+
+      # ── Physics averages ─────────────────────────────────────────
+      - name: avg_release_speed
+        sql: release_speed
+        type: avg
+        title: "Average Release Speed"
+
+      - name: avg_spin_rate
+        sql: spin_rate
+        type: avg
+        title: "Average Spin Rate"
+
+      - name: avg_exit_velocity
+        sql: exit_velocity
+        type: avg
+        title: "Average Exit Velocity"
+
+      - name: avg_launch_angle
+        sql: launch_angle
+        type: avg
+        title: "Average Launch Angle"
+
+      - name: distinct_pitchers
+        sql: pitcher_id
+        type: count_distinct
+        title: "Distinct Pitchers"
+
+      - name: distinct_batters
+        sql: batter_id
+        type: count_distinct
+        title: "Distinct Batters"
+
+    pre_aggregations:
+      # This is a very high-row-count table (one row per pitch across
+      # every game) -- a strong pre-aggregation candidate, but the exact
+      # rollup shape should probably follow whatever mart_pitcher_arsenal
+      # / mart_pitcher_game / mart_matchups actually query most, rather
+      # than guessing generically here.

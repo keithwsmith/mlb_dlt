@@ -1,0 +1,6 @@
+# Extends dim_date under a distinct name so fact_games can join both
+# game_date_key and official_date_key as independent roles, same
+# reasoning as home_teams.yml/away_teams.yml for dim_games.
+cubes:
+  - name: official_dates
+    extends: dim_date

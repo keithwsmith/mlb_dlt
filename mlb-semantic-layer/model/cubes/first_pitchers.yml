@@ -1,0 +1,7 @@
+# Extends dim_player under a distinct name -- see credited_pitchers.yml.
+# This is the "threw the first pitch of the at-bat" role for
+# fact_at_bats (distinct from credited_pitchers, in case of a mid-at-bat
+# pitching substitution).
+cubes:
+  - name: first_pitchers
+    extends: dim_player

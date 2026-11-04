@@ -17,6 +17,10 @@ target/
 dbt_packages/
 logs/
 
+# Cube
+node_modules/
+.cubestore/
+
 # SQL Server / ODBC
 *.mdf
 *.ldf

@@ -1,0 +1,173 @@
+cubes:
+  - name: dim_player
+    sql_table: silver.dim_player
+    data_source: default
+    title: "Player (SCD2)"
+    description: "One row per player per tracked-attribute version (team/jersey/position/status changes over time), not one row per player -- use is_current=1 to get just each player's current version, or distinct_players to count unique players regardless of version count."
+
+    joins:
+      - name: dim_teams
+        # Compound join -- dim_teams' real unique key is (team_id, season).
+        sql: "{CUBE}.team_id = {dim_teams.team_id} AND {CUBE}.effective_season = {dim_teams.season}"
+        relationship: many_to_one
+
+    dimensions:
+      - name: player_version_key
+        sql: player_version_key
+        type: string
+        primary_key: true
+        public: false
+
+      - name: player_id
+        sql: player_id
+        type: number
+        # CRITICAL: this was missing entirely before. dim_draft.yml's join
+        # to this cube references {dim_player.player_id} -- without this
+        # dimension existing, that join could not have worked.
+
+      - name: full_name
+        sql: full_name
+        type: string
+        title: "Player"
+
+      - name: team_id
+        sql: team_id
+        type: number
+        public: false
+
+      - name: jersey_number
+        sql: jersey_number
+        type: string
+        title: "Jersey Number"
+
+      - name: position_code
+        sql: position__code
+        type: string
+        public: false
+        title: "Position Code"
+
+      - name: position_name
+        sql: position__name
+        type: string
+        title: "Position"
+
+      - name: position_type
+        sql: position__type
+        type: string
+        title: "Position Type"
+
+      - name: position_abbreviation
+        sql: position__abbreviation
+        type: string
+        title: "Pos."
+
+      - name: status_code
+        sql: status__code
+        type: string
+        public: false
+        title: "Status Code"
+
+      - name: status_description
+        sql: status_description
+        type: string
+        title: "Status"
+
+      - name: effective_season
+        sql: effective_season
+        type: number
+        title: "Season"
+        # Was missing entirely -- also needed for the compound teams join
+        # above.
+
+      - name: change_hash
+        sql: change_hash
+        type: string
+        public: false
+        # Internal SCD2 change-detection hash, not a business attribute.
+
+      - name: version_number
+        sql: version_number
+        type: number
+        title: "Version #"
+        # Moved from a broken `sum` measure -- an ordinal position within
+        # a player's version history, not something to total across rows.
+
+      - name: effective_date
+        # FIX HISTORY:
+        # 1. Was a bare column reference (sql: effective_date) -- every
+        #    time_dimension (granularity) query threw "conversion of a
+        #    datetimeoffset data type to a datetime data type resulted in
+        #    an out-of-range value."
+        # 2. First attempt: CAST(effective_date AS datetime2) -- assumed
+        #    the problem was precision-rounding overflow near datetime's
+        #    9999-12-31 ceiling. Confirmed WRONG via compiled SQL
+        #    (--mode sql): Cube's month-granularity template wraps
+        #    whatever we give it in TODATETIMEOFFSET(..., '+00:00') and
+        #    then DATEADD(month, DATEDIFF(month, 0, ...), 0) -- and that
+        #    trailing literal 0 only has an implicit conversion to plain
+        #    datetime in SQL Server, so the truncated result is ALWAYS
+        #    forced back through datetime typing no matter what we cast
+        #    to upstream. Our datetime2 cast never had a chance to help.
+        # 3. Actual root cause, confirmed via
+        #    SELECT MIN(effective_date), MAX(effective_date) FROM
+        #    silver.dim_player: one single row (out of 37,637) has
+        #    effective_date = 0205-02-20 -- a data-entry error (almost
+        #    certainly a dropped leading digit, e.g. a real 2005-02-20),
+        #    not a far-future sentinel. datetime's floor is 1753-01-01,
+        #    so this one row is BELOW range, not above it -- the opposite
+        #    direction from what the first fix assumed. max_date
+        #    (2026-08-05) is completely normal.
+        # THE FIX: clamp anything below datetime's floor up to that floor
+        # before Cube's truncation template ever sees it. Keeps the
+        # datetime2 cast too (harmless, and correct practice regardless).
+        # TODO: this is a band-aid for one bad source row, not a real
+        # fix -- flag 0205-02-20 to whoever owns the silver.dim_player ETL
+        # for a real correction (or removal) at the source.
+        sql: "CASE WHEN effective_date < '1753-01-01' THEN CAST('1753-01-01' AS datetime2) ELSE CAST(effective_date AS datetime2) END"
+        type: time
+        title: "Effective Date"
+
+      - name: end_date
+        # NOT YET CONFIRMED against real data the way effective_date was
+        # (see that field's fix history) -- effective_date's actual bad
+        # row turned out to fail LOW (0205-02-20, below datetime's
+        # 1753-01-01 floor), the opposite of what was originally assumed,
+        # so don't assume end_date's risk direction either. This is the
+        # SCD2 "still open" column though, which is plausibly the more
+        # likely candidate for a genuine far-future sentinel -- clamping
+        # both directions rather than guessing again.
+        # TODO: once/if this surfaces in testing, run the same
+        # MIN/MAX(end_date) query against silver.dim_player that found
+        # effective_date's bad row, and replace this two-sided guess with
+        # a fix aimed at the actual value, same as effective_date.
+        sql: "CASE WHEN end_date < '1753-01-01' THEN CAST('1753-01-01' AS datetime2) WHEN end_date > '9999-12-01' THEN CAST('9999-12-01' AS datetime2) ELSE CAST(end_date AS datetime2) END"
+        type: time
+        title: "End Date"
+
+      - name: is_current
+        sql: is_current
+        type: number
+        title: "Is Current?"
+        # CRITICAL: this was missing entirely before. dim_draft.yml's join
+        # to this cube filters on {dim_player.is_current} = 1 specifically
+        # to avoid fanning out across a player's full version history --
+        # without this dimension existing, that join could not have worked.
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Player Versions"
+        # NOTE: this counts SCD2 version rows, not distinct players -- a
+        # player with 5 tracked changes counts as 5 here. Use
+        # distinct_players below for "how many players" questions.
+
+      - name: distinct_players
+        sql: player_id
+        type: count_distinct
+        title: "Distinct Players"
+
+    pre_aggregations:
+      # Deliberately left empty -- this is a slowly-changing dimension
+      # (row count grows with attribute-change events, not with time
+      # directly), not a natural fit for a time-based rollup the way
+      # dim_games or int_pitches_enriched are.

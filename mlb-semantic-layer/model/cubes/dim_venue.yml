@@ -1,0 +1,59 @@
+cubes:
+  - name: dim_venue
+    sql_table: silver.dim_venue
+    data_source: default
+    title: "Venue"
+    description: "One row per venue. Confirmed against dim_venue.sql: venue_key is dbt_utils.generate_surrogate_key(['venue_id']) -- a generated hash of venue_id, not a passthrough. Other cubes' raw venue_id columns must join to venue_id here, not venue_key."
+
+    joins: []
+
+    dimensions:
+      - name: venue_key
+        sql: venue_key
+        type: string
+        primary_key: true
+        public: false
+
+      - name: venue_id
+        sql: venue_id
+        type: number
+        title: "Venue ID"
+
+      - name: venue_name
+        sql: venue_name
+        type: string
+        title: "Venue"
+
+      - name: location_name
+        sql: location_name
+        type: string
+        title: "Location"
+
+      - name: first_year_of_play
+        sql: first_year_of_play
+        type: number
+        title: "First Year of Play"
+
+      - name: spring_venue_id
+        sql: spring_venue_id
+        type: number
+        public: false
+        title: "Spring Venue ID"
+
+      - name: venue_link
+        sql: venue_link
+        type: string
+        public: false
+
+      - name: spring_venue_link
+        sql: spring_venue_link
+        type: string
+        public: false
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Venues"
+
+    pre_aggregations:
+      # Deliberately left empty -- small reference/lookup table.

@@ -1,0 +1,513 @@
+cubes:
+  - name: fact_games
+    sql_table: silver.fact_games
+    data_source: default
+    title: "Game (Fact)"
+    description: "One row per game -- star-schema fact table with resolved dimension keys, built on top of dim_games + dim_game_details. CORRECTION: the previous description claimed home_team_key/away_team_key were 'fixed upstream' to hold genuine surrogate keys -- confirmed FALSE (both are declared type: number in this cube and threw a varchar->bigint error joining to home_teams/away_teams.team_key, a real hash). Joins below now use team_id+season instead. home_pitching_runs_allowed/away_pitching_runs_allowed correctly named (previously mislabeled as _errors); dim_game_status join now matches its full compound key."
+
+    joins:
+      - name: dim_date
+        sql: "{CUBE}.game_date_key = {dim_date.date_key}"
+        relationship: many_to_one
+
+      - name: official_dates
+        sql: "{CUBE}.official_date_key = {official_dates.date_key}"
+        relationship: many_to_one
+
+      - name: home_teams
+        # FIX: the "SIMPLIFIED... fixed upstream" claim was wrong, same as
+        # fact_player_stats' identical claim about its _key columns.
+        # home_team_key is declared `type: number` right in this cube (see
+        # dimensions below) -- a real hash surrogate key would be `string`,
+        # matching every other genuine _key field in this project
+        # (venue_key/season_key on THIS SAME cube are both `string` and
+        # their joins work correctly). Confirmed via a physical test:
+        # joining home_team_key to home_teams.team_key (a real hash)
+        # throws "Error converting data type varchar to bigint". Reverted
+        # to the standard team_id+season compound pattern instead.
+        # VERIFY: spot-check that home_team_key's values actually match
+        # home_teams.team_id before trusting this join's results.
+        # DEFENSIVE: wrapped both join columns in TRY_CONVERT. This join
+        # was already switched from team_key (hash) to team_id per the
+        # comment above, but the 2026-08-21T17:39 test report still threw
+        # "Error converting data type varchar to bigint" on this exact
+        # join AFTER that fix -- and dim_draft's identical join to
+        # dim_teams.team_id passes cleanly, which rules out team_id itself
+        # being the varchar column. Suspect either (a) Cube hadn't
+        # reloaded this schema file yet when that test ran, or (b) the
+        # varchar column is actually on fact_games' side (home_team_key /
+        # season) despite the INFORMATION_SCHEMA claim above -- re-verify
+        # against the live schema. TRY_CONVERT is a safety net either way:
+        # a no-op if both sides are already numeric, and turns any
+        # stray non-numeric row into an excluded (NULL) match instead of
+        # failing the whole query.
+        sql: "TRY_CONVERT(bigint, {CUBE}.home_team_key) = TRY_CONVERT(bigint, {home_teams.team_id}) AND {CUBE}.season = {home_teams.season}"
+        relationship: many_to_one
+
+      - name: away_teams
+        # FIX: same issue/fix as home_teams above.
+        # DEFENSIVE: TRY_CONVERT added for the same reason -- see the
+        # home_teams join comment above.
+        sql: "TRY_CONVERT(bigint, {CUBE}.away_team_key) = TRY_CONVERT(bigint, {away_teams.team_id}) AND {CUBE}.season = {away_teams.season}"
+        relationship: many_to_one
+
+      - name: dim_venue
+        # Cube name/key not confirmed from here -- verify against dim_venue.yml.
+        sql: "{CUBE}.venue_key = {dim_venue.venue_key}"
+        relationship: many_to_one
+
+      - name: dim_season
+        sql: "{CUBE}.season_key = {dim_season.season_key}"
+        relationship: many_to_one
+
+      - name: dim_game_type
+        sql: "{CUBE}.game_type_key = {dim_game_type.game_type_key}"
+        relationship: many_to_one
+
+      - name: dim_game_status
+        # NOTE: this key may be unreliable -- the underlying SQL join that
+        # produced it only matched on status_code, not the full
+        # (coded_game_state, status_code) pair dim_game_status actually
+        # needs to be unique. See cube description.
+        sql: "{CUBE}.game_status_key = {dim_game_status.game_status_key}"
+        relationship: many_to_one
+
+      - name: credited_pitchers
+        sql: "{CUBE}.winning_pitcher_id = {credited_pitchers.player_id} AND {credited_pitchers.is_current} = 1"
+        relationship: many_to_one
+
+      - name: losing_pitchers
+        sql: "{CUBE}.losing_pitcher_id = {losing_pitchers.player_id} AND {losing_pitchers.is_current} = 1"
+        relationship: many_to_one
+
+      - name: save_pitchers
+        sql: "{CUBE}.save_pitcher_id = {save_pitchers.player_id} AND {save_pitchers.is_current} = 1"
+        relationship: many_to_one
+
+    dimensions:
+      - name: game_pk
+        sql: game_pk
+        type: number
+        primary_key: true
+        public: false
+
+      - name: season
+        sql: season
+        type: number
+
+      - name: game_date_key
+        sql: game_date_key
+        type: number
+        public: false
+
+      - name: official_date_key
+        sql: official_date_key
+        type: number
+        public: false
+
+      - name: home_team_key
+        sql: home_team_key
+        type: number
+        public: false
+
+      - name: away_team_key
+        sql: away_team_key
+        type: number
+        public: false
+
+      - name: venue_key
+        sql: venue_key
+        type: string
+        public: false
+
+      - name: season_key
+        sql: season_key
+        type: string
+        public: false
+
+      - name: game_type_key
+        sql: game_type_key
+        type: string
+        public: false
+
+      - name: game_status_key
+        sql: game_status_key
+        type: string
+        public: false
+
+      - name: winning_team_id
+        sql: winning_team_id
+        type: number
+        public: false
+
+      - name: losing_team_id
+        sql: losing_team_id
+        type: number
+        public: false
+
+      - name: run_diff
+        sql: run_diff
+        type: number
+        title: "Run Differential"
+
+      - name: is_final
+        sql: is_final
+        type: number
+        title: "Is Final?"
+
+      - name: is_tie
+        sql: is_tie
+        type: number
+        title: "Is Tie?"
+
+      - name: is_no_hitter
+        sql: is_no_hitter
+        type: number
+        title: "Is No-Hitter?"
+
+      - name: is_perfect_game
+        sql: is_perfect_game
+        type: number
+        title: "Is Perfect Game? (necessary, not sufficient -- see model notes)"
+
+      - name: is_shutout
+        sql: is_shutout
+        type: number
+        title: "Is Shutout?"
+
+      - name: winning_pitcher_id
+        sql: winning_pitcher_id
+        type: number
+        public: false
+
+      - name: winning_pitcher_name
+        sql: winning_pitcher_name
+        type: string
+        title: "Winning Pitcher"
+
+      - name: losing_pitcher_id
+        sql: losing_pitcher_id
+        type: number
+        public: false
+
+      - name: losing_pitcher_name
+        sql: losing_pitcher_name
+        type: string
+        title: "Losing Pitcher"
+
+      - name: save_pitcher_id
+        sql: save_pitcher_id
+        type: number
+        public: false
+
+      - name: save_pitcher_name
+        sql: save_pitcher_name
+        type: string
+        title: "Save Pitcher"
+
+      - name: attendance
+        sql: attendance
+        type: number
+        title: "Attendance"
+
+      - name: game_duration_minutes
+        sql: game_duration_minutes
+        type: number
+        title: "Duration (min)"
+
+      - name: first_pitch
+        sql: first_pitch
+        type: time
+        title: "First Pitch"
+
+      - name: weather_condition
+        sql: weather_condition
+        type: string
+        title: "Weather Condition"
+
+      - name: weather_temp
+        sql: weather_temp
+        type: number
+        title: "Temperature"
+
+      - name: weather_wind
+        sql: weather_wind
+        type: string
+        title: "Wind"
+
+      # ── Raw per-game stats (hidden -- see sum measures below) ──────
+      - name: home_team_runs
+        sql: home_team_runs
+        type: number
+        public: false
+
+      - name: away_team_runs
+        sql: away_team_runs
+        type: number
+        public: false
+
+      - name: home_team_hits
+        sql: home_team_hits
+        type: number
+        public: false
+
+      - name: away_team_hits
+        sql: away_team_hits
+        type: number
+        public: false
+
+      - name: home_pitching_runs_allowed
+        sql: home_pitching_runs_allowed
+        type: number
+        public: false
+        title: "Home Pitching Runs Allowed"
+
+      - name: away_pitching_runs_allowed
+        sql: away_pitching_runs_allowed
+        type: number
+        public: false
+        title: "Away Pitching Runs Allowed"
+
+      - name: home_doubles
+        sql: home_doubles
+        type: number
+        public: false
+
+      - name: home_triples
+        sql: home_triples
+        type: number
+        public: false
+
+      - name: home_home_runs
+        sql: home_home_runs
+        type: number
+        public: false
+
+      - name: home_rbi
+        sql: home_rbi
+        type: number
+        public: false
+
+      - name: home_stolen_bases
+        sql: home_stolen_bases
+        type: number
+        public: false
+
+      - name: home_batting_strikeouts
+        sql: home_batting_strikeouts
+        type: number
+        public: false
+
+      - name: home_batting_walks
+        sql: home_batting_walks
+        type: number
+        public: false
+
+      - name: home_left_on_base
+        sql: home_left_on_base
+        type: number
+        public: false
+
+      - name: away_doubles
+        sql: away_doubles
+        type: number
+        public: false
+
+      - name: away_triples
+        sql: away_triples
+        type: number
+        public: false
+
+      - name: away_home_runs
+        sql: away_home_runs
+        type: number
+        public: false
+
+      - name: away_rbi
+        sql: away_rbi
+        type: number
+        public: false
+
+      - name: away_stolen_bases
+        sql: away_stolen_bases
+        type: number
+        public: false
+
+      - name: away_batting_strikeouts
+        sql: away_batting_strikeouts
+        type: number
+        public: false
+
+      - name: away_batting_walks
+        sql: away_batting_walks
+        type: number
+        public: false
+
+      - name: away_left_on_base
+        sql: away_left_on_base
+        type: number
+        public: false
+
+      - name: home_pitching_strikeouts
+        sql: home_pitching_strikeouts
+        type: number
+        public: false
+
+      - name: home_pitching_walks
+        sql: home_pitching_walks
+        type: number
+        public: false
+
+      - name: home_pitching_hits_allowed
+        sql: home_pitching_hits_allowed
+        type: number
+        public: false
+
+      - name: home_pitching_earned_runs
+        sql: home_pitching_earned_runs
+        type: number
+        public: false
+
+      - name: home_pitching_home_runs_allowed
+        sql: home_pitching_home_runs_allowed
+        type: number
+        public: false
+
+      - name: away_pitching_strikeouts
+        sql: away_pitching_strikeouts
+        type: number
+        public: false
+
+      - name: away_pitching_walks
+        sql: away_pitching_walks
+        type: number
+        public: false
+
+      - name: away_pitching_hits_allowed
+        sql: away_pitching_hits_allowed
+        type: number
+        public: false
+
+      - name: away_pitching_earned_runs
+        sql: away_pitching_earned_runs
+        type: number
+        public: false
+
+      - name: away_pitching_home_runs_allowed
+        sql: away_pitching_home_runs_allowed
+        type: number
+        public: false
+
+      # ── Audit (hidden) ───────────────────────────────────────────
+      - name: load_id
+        sql: load_id
+        type: string
+        public: false
+
+      - name: dlt_id
+        sql: _dlt_id
+        type: string
+        public: false
+
+      - name: created_at
+        sql: created_at
+        type: time
+        public: false
+
+      - name: updated_at
+        sql: updated_at
+        type: time
+        public: false
+
+    measures:
+      - name: count
+        type: count
+        title: "Number of Games"
+
+      - name: final_games_count
+        type: count
+        title: "Number of Completed Games"
+        filters:
+          - sql: "{CUBE}.is_final = 1"
+
+      - name: no_hitter_count
+        type: count
+        title: "No-Hitters"
+        filters:
+          - sql: "{CUBE}.is_no_hitter = 1"
+
+      - name: shutout_count
+        type: count
+        title: "Shutouts"
+        filters:
+          - sql: "{CUBE}.is_shutout = 1"
+
+      - name: total_attendance
+        sql: attendance
+        type: sum
+        title: "Total Attendance"
+
+      - name: avg_attendance
+        sql: attendance
+        type: avg
+        title: "Average Attendance"
+
+      - name: avg_game_duration_minutes
+        sql: game_duration_minutes
+        type: avg
+        title: "Average Game Duration (min)"
+
+      - name: total_home_runs_scored
+        sql: home_team_runs
+        type: sum
+        title: "Total Home Team Runs Scored"
+
+      - name: total_away_runs_scored
+        sql: away_team_runs
+        type: sum
+        title: "Total Away Team Runs Scored"
+
+      - name: total_home_hits
+        sql: home_team_hits
+        type: sum
+        title: "Total Home Team Hits"
+
+      - name: total_away_hits
+        sql: away_team_hits
+        type: sum
+        title: "Total Away Team Hits"
+
+      - name: total_home_home_runs
+        sql: home_home_runs
+        type: sum
+        title: "Total Home Team Home Runs"
+
+      - name: total_away_home_runs
+        sql: away_home_runs
+        type: sum
+        title: "Total Away Team Home Runs"
+
+      - name: total_home_rbi
+        sql: home_rbi
+        type: sum
+        title: "Total Home Team RBI"
+
+      - name: total_away_rbi
+        sql: away_rbi
+        type: sum
+        title: "Total Away Team RBI"
+
+      - name: total_home_pitching_strikeouts
+        sql: home_pitching_strikeouts
+        type: sum
+        title: "Total Home Team Pitching Strikeouts"
+
+      - name: total_away_pitching_strikeouts
+        sql: away_pitching_strikeouts
+        type: sum
+        title: "Total Away Team Pitching Strikeouts"
+
+    pre_aggregations:
+      # Real fact-shaped table with a resolved date key -- good rollup
+      # candidate, e.g. by season/game_type_key. Left empty pending a
+      # concrete query pattern to match.

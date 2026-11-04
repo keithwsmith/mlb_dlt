@@ -1,0 +1,7 @@
+# Extends dim_teams under a distinct cube name so dim_team_standings can
+# join both team_id (via dim_teams directly) and opponent_team_id (via
+# this cube) as two independent roles -- same reasoning as
+# home_teams.yml/away_teams.yml for dim_games.
+cubes:
+  - name: opponent_teams
+    extends: dim_teams
