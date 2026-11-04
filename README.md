@@ -16,6 +16,7 @@
 | [`ETLMonitor`](ETLMonitor/) | ETLMonitor.py | Monitors ETL pipeline runs and reports on load status, row counts, and errors |
 | [`mlb_test_output`](mlb_test_output/) | mlb_test_output.py | Renders dbt test results into a structured report for review |
 | [`mlb_latestgame_agent`](mlb_latestgame_agent/) | check_latest_game.py | Agent that checks for the latest completed MLB game and triggers an incremental load if new games are available |
+| [`mlb_agent`](mlb_agent/) | mlb_agent.py | Post-run agent called by pipeline |
 
         ### dbt Transformation Layer
 
@@ -96,6 +97,8 @@
         mlb_test_output.py               ← renders dbt test results into reports
         ETLMonitor.py                    ← pipeline health monitoring + row counts
         lineage_builder.py               ← exports dbt lineage metadata
+              │
+        mlb_agent.py                     ← post-run review (run_agent(run_id))
               │
               ├──▶ mlb-semantic-layer (Cube) ← measures/dimensions over the warehouse
               │                                 (tested by cube_test_runner.py)
@@ -179,7 +182,8 @@
         ├── mlb_lineage/                  # dbt lineage metadata builder
         ├── mlb_latestgame_agent/         # Latest game check + incremental trigger
         ├── mlb_test_output/              # dbt test result reporter
-        ├── ETLMonitor/                   # ETL health monitor
+        ├── ETLMonitor/                   # ETL health monitor (+ ai_anomaly.py)
+        ├── mlb_agent/                    # Post-run agent called by pipeline.py
         ├── mlb-semantic-layer/           # Cube semantic layer + cube_test_runner.py
         ├── mlb_app/                      # FastAPI + React web app for browsing the warehouse
         ├── dbt_baseball/                 # dbt project

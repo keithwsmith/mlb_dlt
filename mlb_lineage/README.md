@@ -4,7 +4,7 @@ Builds and exports dbt lineage metadata for the MLB data warehouse.
 
 ## File
 
-`lineage_builder.py`
+- `lineage_builder.py`
 
 ## Usage
 

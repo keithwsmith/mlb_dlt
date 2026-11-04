@@ -4,7 +4,7 @@ Agent that checks for the latest completed MLB game and triggers an incremental 
 
 ## File
 
-`check_latest_game.py`
+- `check_latest_game.py`
 
 ## Usage
 

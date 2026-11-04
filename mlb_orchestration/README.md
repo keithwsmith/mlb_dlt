@@ -4,7 +4,7 @@ Orchestration pipeline that coordinates and sequences all MLB dlt loads.
 
 ## File
 
-`pipeline.py`
+- `pipeline.py`
 
 ## Usage
 

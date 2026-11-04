@@ -10,7 +10,6 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Set, Optional, Tuple
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
-import sys
 sys.path.append(r"C:\Users\Keith\PycharmProjects\mlb_agent")
 
 from mlb_agent import run_agent
@@ -44,17 +43,48 @@ LINEAGE_OUTPUT_SCRIPT = r"C:\Users\Keith\PycharmProjects\mlb_lineage\lineage_bui
 # DATABASE CONFIG — used for pipeline logging & record counts
 # Match these to your dbt profiles.yml prod target
 # ==========================================================
+# ----------------------------------------------------------
+# Connection settings come from a .env file (never hard-coded).
+# find_dotenv() searches this script's folder, then each parent folder,
+# so one .env in a shared parent (e.g. PycharmProjects) serves every
+# project. Set DOTENV_PATH to point at a specific file instead.
+# Requires: pip install python-dotenv
+# ----------------------------------------------------------
+from dotenv import load_dotenv, find_dotenv
+
+#load_dotenv(os.environ.get("DOTENV_PATH") or find_dotenv(usecwd=False))
+load_dotenv(os.environ.get("DOTENV_PATH") or r"C:\Users\Keith\PycharmProjects\SQL_ENV\.env")
+
+
+def _env(name: str, default: str = None, required: bool = False) -> str:
+    value = os.environ.get(name, default)
+    if required and not value:
+        raise RuntimeError(
+            f"{name} is not set. Add it to your .env file (see .env.template)."
+        )
+    return value
+
+
+MSSQL_DRIVER   = _env("MSSQL_DRIVER", "ODBC Driver 17 for SQL Server")
+MSSQL_SERVER   = _env("MSSQL_SERVER", required=True)
+MSSQL_DATABASE = _env("MSSQL_DATABASE", required=True)
+MSSQL_TRUSTED  = _env("MSSQL_TRUSTED_CONNECTION", "no").strip().lower() in ("yes", "true", "1")
+MSSQL_USERNAME = _env("MSSQL_USERNAME", required=not MSSQL_TRUSTED)
+MSSQL_PASSWORD = _env("MSSQL_PASSWORD", required=not MSSQL_TRUSTED)
+MSSQL_TRUST_CERT = _env("MSSQL_TRUST_SERVER_CERTIFICATE", "yes")
+
+# Keys become "key=value" pairs in the ODBC connection string (_get_connection).
 DB_CONNECTION = {
-    "driver":   "{ODBC Driver 17 for SQL Server}",
-    "server":   "KEITH-PERSONAL",
-    "database": "dlt",
-	"uid": "sa",
-	"pwd": "pass0123"
-    #"trusted_connection": "yes",
-    # If using SQL auth instead, comment out trusted_connection and set:
-    # "uid": "your_user",
-    # "pwd": "your_password",
+    "driver":   "{" + MSSQL_DRIVER + "}",
+    "server":   MSSQL_SERVER,
+    "database": MSSQL_DATABASE,
+    "TrustServerCertificate": MSSQL_TRUST_CERT,
 }
+if MSSQL_TRUSTED:
+    DB_CONNECTION["trusted_connection"] = "yes"
+else:
+    DB_CONNECTION["uid"] = MSSQL_USERNAME
+    DB_CONNECTION["pwd"] = MSSQL_PASSWORD
 
 
 # Schema where dbt models land (adjust if needed)

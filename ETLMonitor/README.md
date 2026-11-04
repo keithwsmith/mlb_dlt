@@ -2,9 +2,10 @@
 
 Monitors ETL pipeline runs and reports on load status, row counts, and errors.
 
-## File
+## Files
 
-`ETLMonitor.py`
+- `ETLMonitor.py`
+- `ai_anomaly.py`
 
 ## Usage
 

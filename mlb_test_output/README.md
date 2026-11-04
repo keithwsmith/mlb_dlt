@@ -4,7 +4,7 @@ Renders dbt test results into a structured report for review.
 
 ## File
 
-`mlb_test_output.py`
+- `mlb_test_output.py`
 
 ## Usage
 

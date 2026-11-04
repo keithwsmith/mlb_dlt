@@ -4,7 +4,7 @@ Core dlt-based ELT loader that pulls data from the MLB Stats API and loads it in
 
 ## File
 
-`mlb_load.py`
+- `mlb_load.py`
 
 ## Usage
 

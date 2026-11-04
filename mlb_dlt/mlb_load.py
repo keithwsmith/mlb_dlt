@@ -1,3 +1,4 @@
+import os
 import dlt
 import json
 import requests
@@ -11,14 +12,47 @@ from urllib3.util.retry import Retry
 # ----------------------------
 # Destination DB connection
 # ----------------------------
+# ----------------------------------------------------------
+# Connection settings come from a .env file (never hard-coded).
+# find_dotenv() searches this script's folder, then each parent folder,
+# so one .env in a shared parent (e.g. PycharmProjects) serves every
+# project. Set DOTENV_PATH to point at a specific file instead.
+# Requires: pip install python-dotenv
+# ----------------------------------------------------------
+from dotenv import load_dotenv, find_dotenv
+
+#load_dotenv(os.environ.get("DOTENV_PATH") or find_dotenv(usecwd=False))
+load_dotenv(os.environ.get("DOTENV_PATH") or r"C:\Users\Keith\PycharmProjects\SQL_ENV\.env")
+
+
+def _env(name: str, default: str = None, required: bool = False) -> str:
+    value = os.environ.get(name, default)
+    if required and not value:
+        raise RuntimeError(
+            f"{name} is not set. Add it to your .env file (see .env.template)."
+        )
+    return value
+
+
+MSSQL_DRIVER   = _env("MSSQL_DRIVER", "ODBC Driver 17 for SQL Server")
+MSSQL_SERVER   = _env("MSSQL_SERVER", required=True)
+MSSQL_DATABASE = _env("MSSQL_DATABASE", required=True)
+MSSQL_TRUSTED  = _env("MSSQL_TRUSTED_CONNECTION", "no").strip().lower() in ("yes", "true", "1")
+MSSQL_USERNAME = _env("MSSQL_USERNAME", required=not MSSQL_TRUSTED)
+MSSQL_PASSWORD = _env("MSSQL_PASSWORD", required=not MSSQL_TRUSTED)
+MSSQL_TRUST_CERT = _env("MSSQL_TRUST_SERVER_CERTIFICATE", "yes")
+
+
+# Used for the pyodbc lookups below (max dates, valid game_pks, ...).
+# dlt's own load credentials are separate: .dlt/secrets.toml or the
+# DESTINATION__MSSQL__CREDENTIALS__* environment variables.
 DW_CONNECTION_STRING = (
-    "DRIVER={ODBC Driver 17 for SQL Server};"
-    "SERVER=KEITH-PERSONAL;"
-    "DATABASE=dlt;"
-    "username = sa;"
-    "password = pass0123;"
-    "Trusted_Connection=yes;"
-    "trust_server_certificate = true;"
+    f"DRIVER={{{MSSQL_DRIVER}}};"
+    f"SERVER={MSSQL_SERVER};"
+    f"DATABASE={MSSQL_DATABASE};"
+    + ("Trusted_Connection=yes;" if MSSQL_TRUSTED
+       else f"UID={MSSQL_USERNAME};PWD={MSSQL_PASSWORD};")
+    + f"TrustServerCertificate={MSSQL_TRUST_CERT};"
 )
 BASE_URL = "https://statsapi.mlb.com/api/v1/"
 
