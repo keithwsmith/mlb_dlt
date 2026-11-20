@@ -48,6 +48,12 @@ The `dbt_baseball` project contains:
 |--------|-------------|
 | [`mlb-semantic-layer`](mlb-semantic-layer/) | Cube (cube.dev) semantic layer over the MLB data warehouse, with `cube_test_runner.py` to test every cube |
 
+### Environment Settings
+
+| Folder | Description |
+|--------|-------------|
+| [`SQL_ENV`](SQL_ENV/) | `env.example` — the environment file many of the Python programs read, so nothing is hard-coded. Adapt it to your environment. |
+
 ### Tutorials
 
 | Folder | Description |
@@ -173,7 +179,9 @@ python -m http.server 5500
 All connection strings and runtime settings are controlled via environment variables.
 Copy `.env.template` to `.env` and fill in your values. **Never commit `.env` to Git.**
 
-See [`.env.template`](.env.template) for the full list of variables.
+See [`.env.template`](.env.template) for the full list of variables, and
+[`SQL_ENV/env.example`](SQL_ENV/) for the environment file the Python programs
+read, including how to switch from SQL Server to another database.
 
 For dbt specifically, update `dbt_baseball/profiles.yml` with your SQL Server host,
 database, and authentication method, or set `DBT_PROFILES_DIR` in your `.env` to
@@ -193,6 +201,7 @@ mlb_dlt/
 ├── mlb-semantic-layer/           # Cube semantic layer + cube_test_runner.py
 ├── mlb_app/                      # FastAPI + React web app for browsing the warehouse
 ├── data_quality_tutorial/        # Data Quality Tutorial using DBT (slide deck)
+├── SQL_ENV/                      # env.example: settings for the Python programs
 ├── dbt_baseball/                 # dbt project
 │   ├── models/
 │   │   ├── staging/              # Staging models
