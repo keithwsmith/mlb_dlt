@@ -5,11 +5,53 @@ sources:
     schema: dw
     tables:
       - name: people_details
-      - name: team_coaches
       - name: milb_teams
  
 models:
-  
+  - name: stg_milb_players
+    description: >
+      Minor league players by level and season, from dw.milb_players
+      (mlb_load.py milb_players). One row per player per level per season:
+      a player promoted from AA to AAA mid-season has a row for each level.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [player_id, season, sport_id]
+    columns:
+      - name: player_id
+        description: MLB person id (same id space as stg_rosters.player_id).
+        tests:
+          - not_null
+      - name: full_name
+        description: Player full name.
+        tests:
+          - not_null
+      - name: season
+        description: Season year.
+        tests:
+          - not_null
+      - name: sport_id
+        description: Stats API sport id of the level (11 AAA, 12 AA, 13 High-A, 14 Single-A, 16 Rookie).
+        tests:
+          - not_null
+          - accepted_values:
+              values: [11, 12, 13, 14, 16]
+      - name: level
+        description: Level name from COACH_SPORT_IDS in mlb_load.py.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['AAA', 'AA', 'High-A', 'Single-A', 'Rookie']
+      - name: team_id
+        description: >
+          MLB parent organization of the affiliate (parent_org_id). Same
+          meaning as stg_rosters.team_id. NULL when the API gives no team
+          for that season.
+      - name: affiliate_team_id
+        description: The minor league club the player was with (current_team_id).
+      - name: affiliate_team_name
+        description: Name of affiliate_team_id.
+
   # ────────────────────────────────────────────────────────────────────────────
   # STG_PLAY_EVENTS
   # One row per pitch / play event within a game at-bat.

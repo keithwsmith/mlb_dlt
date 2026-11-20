@@ -67,6 +67,6 @@ dispatch:
     search_order: ['audit_helper_ext', 'dbt']    
     
 on-run-end:
-  - "{{ dbt_artifacts.upload_results(results) }}"
+  - "{{ upload_results_mssql(results) }}"
   - "{{ log_test_results(results) }}"
   - "{{ log_manual_dbt_run(results) if var('log_manual_run', false) else '' }}"

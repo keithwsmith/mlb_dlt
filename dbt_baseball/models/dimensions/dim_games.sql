@@ -11,10 +11,31 @@
     )
 }}
 
+{#
+    All games are kept, whatever their status. Postponed / Cancelled games
+    used to be filtered out here, but games that started and were then
+    postponed still have pitches, so the marts referenced game_pks that were
+    missing from this dimension (13,790 mart_batter_game rows). Use the
+    is_postponed / is_cancelled / is_final flags to filter in reports instead.
+
+    dw.games is appended to by dlt, so the same game can appear once per load
+    (e.g. 'Postponed' in an early load, 'Final' later). Only the latest row
+    per game_pk is kept, so this table has one row per game.
+#}
+
 WITH source AS (
     SELECT *
-    FROM {{ source('dw', 'games') }}
-	where status__detailed_state NOT IN ('Cancelled','Postponed')
+    FROM (
+        SELECT
+            *,
+            ROW_NUMBER() OVER (
+                PARTITION BY game_pk
+                ORDER BY _dlt_load_id DESC, _dlt_id DESC
+            ) AS rn
+        FROM {{ source('dw', 'games') }}
+        WHERE game_pk IS NOT NULL
+    ) g
+    WHERE rn = 1
 ),
 
 typed AS (
@@ -111,6 +132,16 @@ final AS (
             WHEN detailed_state = 'Final' THEN 1
             ELSE 0
         END AS is_final,
+
+        CASE
+            WHEN detailed_state = 'Postponed' THEN 1
+            ELSE 0
+        END AS is_postponed,
+
+        CASE
+            WHEN detailed_state = 'Cancelled' THEN 1
+            ELSE 0
+        END AS is_cancelled,
 
         CASE
             WHEN game_type IN ('R') THEN 'Regular Season'

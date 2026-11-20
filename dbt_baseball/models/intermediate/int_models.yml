@@ -31,7 +31,12 @@ models:
     columns:
       - name: game_pk
         description: MLB game identifier. Combined with team_id, forms this model's grain.
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_games')
+                field: game_pk
 
       - name: season
         description: Season year the game was played in.
@@ -60,7 +65,14 @@ models:
 
       - name: team_id
         description: The team this row represents (this model's "perspective" team). Combined with game_pk, forms this model's grain.
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_id
+              config:
+                severity: warn
 
       - name: team_name
         description: Display name of team_id.
@@ -68,7 +80,14 @@ models:
 
       - name: opponent_team_id
         description: The team on the other side of this game.
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_id
+              config:
+                severity: warn
 
       - name: opponent_team_name
         description: Display name of opponent_team_id.
@@ -84,7 +103,14 @@ models:
 
       - name: venue_id
         description: Ballpark the game was played at.
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_venue')
+                field: venue_id
+              config:
+                severity: warn
 
       - name: team_score
         description: >
@@ -195,7 +221,12 @@ models:
       # since this is a separately materialized table.
       - name: game_pk
         description: See int_team_game_results.game_pk.
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_games')
+                field: game_pk
       - name: season
         description: See int_team_game_results.season.
         tests: [not_null]
@@ -214,13 +245,27 @@ models:
         tests: [not_null]
       - name: team_id
         description: See int_team_game_results.team_id.
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_id
+              config:
+                severity: warn
       - name: team_name
         description: See int_team_game_results.team_name.
         tests: [not_null]
       - name: opponent_team_id
         description: See int_team_game_results.opponent_team_id.
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_id
+              config:
+                severity: warn
       - name: opponent_team_name
         description: See int_team_game_results.opponent_team_name.
         tests: [not_null]
@@ -233,7 +278,14 @@ models:
                 values: [0, 1]
       - name: venue_id
         description: See int_team_game_results.venue_id.
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_venue')
+                field: venue_id
+              config:
+                severity: warn
       - name: team_score
         description: See int_team_game_results.team_score.
         tests: [not_null]
@@ -448,7 +500,12 @@ models:
     columns:
       - name: game_pk
         description: MLB game identifier. Combined with player_id, forms this model's grain.
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_games')
+                field: game_pk
 
       - name: season
         description: Season year the game was played in.
@@ -464,7 +521,7 @@ models:
           - not_null
           - accepted_values:
               arguments:
-                values: ['R']
+                values: ['Regular Season']
 
       - name: game_date
         description: Official date of the game.
@@ -476,7 +533,14 @@ models:
 
       - name: player_id
         description: The player this row represents. Combined with game_pk, forms this model's grain.
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_player')
+                field: player_id
+              config:
+                severity: warn
 
       - name: player_name
         description: Display name of player_id.
@@ -484,7 +548,14 @@ models:
 
       - name: team_id
         description: The team player_id was playing for in this game.
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_id
+              config:
+                severity: warn
 
       - name: team_name
         description: Display name of team_id.
@@ -492,7 +563,14 @@ models:
 
       - name: opponent_team_id
         description: The team on the other side of this game, derived from is_home vs. dim_games' home/away team ids (see model header assumption #3).
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_id
+              config:
+                severity: warn
 
       - name: opponent_team_name
         description: Display name of opponent_team_id.
@@ -508,7 +586,14 @@ models:
 
       - name: position_code
         description: Position player_id appeared at in this game (raw source code).
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_position')
+                field: position_code
+              config:
+                severity: warn
 
       - name: position_name
         description: Display name of position_code.
@@ -732,7 +817,12 @@ models:
 
       - name: game_pk
         description: MLB game identifier the pitch belongs to.
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_games')
+                field: game_pk
 
       - name: at_bat_index
         description: Index of the plate appearance within the game that this pitch belongs to.
@@ -832,7 +922,14 @@ models:
       # ── batter / pitcher ────────────────────────────────────────────
       - name: batter_id
         description: MLB player id of the batter.
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_person')
+                field: person_id
+              config:
+                severity: warn
 
       - name: batter_name
         description: Batter's display name.
@@ -846,7 +943,14 @@ models:
 
       - name: pitcher_id
         description: MLB player id of the pitcher.
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_player')
+                field: player_id
+              config:
+                severity: warn
 
       - name: pitcher_name
         description: Pitcher's display name.
@@ -861,6 +965,11 @@ models:
       # ── pitch type ───────────────────────────────────────────────────
       - name: pitch_type_code
         description: Coded pitch type (e.g. FF, SL, CH).
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_pitch_type')
+                field: pitch_type_code
 
       - name: pitch_type_description
         description: Human-readable pitch type description.
@@ -960,6 +1069,10 @@ models:
           - accepted_values:
               arguments:
                 values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 99]
+          - relationships:
+              arguments:
+                to: ref('dim_zone')
+                field: zone_id
 
       - name: sz_top
         description: Top of this batter's strike zone (feet).

@@ -36,6 +36,10 @@ models:
         description: "MLB game identifier (source: statsapi gamePk)."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_games')
+                field: game_pk
 
       - name: official_id
         description: "MLB official identifier for the home-plate umpire (source: dim_game_umpires)."
@@ -147,6 +151,10 @@ models:
         description: "MLB game identifier."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_games')
+                field: game_pk
 
       - name: season
         description: "Season year."
@@ -162,11 +170,23 @@ models:
         description: "MLB player ID of the pitcher."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_player')
+                field: player_id
+              config:
+                severity: warn
 
       - name: batter_id
         description: "MLB player ID of the batter."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_person')
+                field: person_id
+              config:
+                severity: warn
 
       # ── matchup descriptors ─────────────────────────────────
       - name: pitcher_name
@@ -374,6 +394,10 @@ models:
         description: "MLB game identifier."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_games')
+                field: game_pk
 
       - name: season
         description: "Season year."
@@ -399,14 +423,31 @@ models:
         description: "MLB player ID of the pitcher."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_player')
+                field: player_id
+              config:
+                severity: warn
 
       - name: batter_id
         description: "MLB player ID of the batter."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_player')
+                field: player_id
+              config:
+                severity: warn
 
       - name: pitch_type_code
         description: "Two-character pitch type code."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_pitch_type')
+                field: pitch_type_code
         # Nullable for unknown pitch types
 
       # ── matchup context ─────────────────────────────────────
@@ -579,6 +620,10 @@ models:
         tests:
           - not_null
           - unique
+          - relationships:
+              arguments:
+                to: ref('dim_draft')
+                field: draft_key
 
       - name: pick_number
         description: "Overall pick number."
@@ -639,38 +684,82 @@ models:
         tests:
           - not_null
           - unique
+          - relationships:
+              arguments:
+                to: ref('dim_games')
+                field: game_pk
 
       # ── dimension keys ──────────────────────────────────────
       - name: game_date_key
         description: "Foreign key to dim_date for the game date."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
         # Nullable if date not in dimension
 
       - name: official_date_key
         description: "Foreign key to dim_date for the official date."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
         # Nullable
 
       - name: home_team_key
         description: "Foreign key to dim_team for the home team."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_key
         # Nullable if team/season combo not matched
 
       - name: away_team_key
         description: "Foreign key to dim_team for the away team."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_key
         # Nullable if team/season combo not matched
 
       - name: venue_key
         description: "Foreign key to dim_venue."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_venue')
+                field: venue_key
         # Nullable
 
       - name: season_key
         description: "Foreign key to dim_season."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_season')
+                field: season_key
         # Nullable
 
       - name: game_type_key
         description: "Foreign key to dim_game_type."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_game_type')
+                field: game_type_key
         # Nullable
 
       - name: game_status_key
         description: "Foreign key to dim_game_status."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_game_status')
+                field: game_status_key
         # Nullable
 
       # ── game identification ─────────────────────────────────
@@ -717,10 +806,24 @@ models:
       # ── derived outcomes ────────────────────────────────────
       - name: winning_team_id
         description: "Team ID of the winner."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_id
+              config:
+                severity: warn
         # Nullable for ties or incomplete games
 
       - name: losing_team_id
         description: "Team ID of the loser."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_id
+              config:
+                severity: warn
         # Nullable for ties or incomplete games
 
       - name: run_diff
@@ -737,24 +840,36 @@ models:
       # ── pitcher IDs (placeholders) ──────────────────────────
       - name: winning_pitcher_id
         description: "Winning pitcher ID (placeholder, currently NULL)."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_person')
+                field: person_id
+              config:
+                severity: warn
         # Placeholder
 
       - name: losing_pitcher_id
         description: "Losing pitcher ID (placeholder, currently NULL)."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_person')
+                field: person_id
+              config:
+                severity: warn
         # Placeholder
 
       - name: save_pitcher_id
         description: "Save pitcher ID (placeholder, currently NULL)."
-        # Placeholder
-
-      - name: home_probable_pitcher_id
-        description: "Home probable pitcher ID (placeholder, currently NULL)."
-        # Placeholder
-
-      - name: away_probable_pitcher_id
-        description: "Away probable pitcher ID (placeholder, currently NULL)."
-        # Placeholder
-
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_person')
+                field: person_id
+              config:
+                severity: warn
+       
       # ── attendance ──────────────────────────────────────────
       - name: attendance
         description: "Game attendance (placeholder, currently NULL)."
@@ -831,15 +946,28 @@ models:
         description: "Player ID used as foreign key to dim_player."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_player')
+                field: player_version_key
 
       - name: team_key
         description: "Team ID used as foreign key to dim_team."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_key
         # Nullable
 
       - name: season_key
         description: "Season used as foreign key to dim_season."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_season')
+                field: season_key
           
       
 
@@ -1093,6 +1221,11 @@ models:
       # ── fielding stats ──────────────────────────────────────
       - name: position_code
         description: "Position code for these stats."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_position')
+                field: position_code
         # Nullable
 
       - name: games_at_position

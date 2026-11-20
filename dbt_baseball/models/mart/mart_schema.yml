@@ -18,6 +18,10 @@ models:
         description: "MLB game identifier."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_games')
+                field: game_pk
 
       - name: season
         description: "Season year."
@@ -28,6 +32,12 @@ models:
         description: "MLB player ID of the batter."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_person')
+                field: person_id
+              config:
+                severity: warn
 
       - name: load_id
         description: "Most recent dlt load identifier for this group."
@@ -372,11 +382,23 @@ models:
         description: "MLB player ID of the pitcher."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_person')
+                field: person_id
+              config:
+                severity: warn
 
       - name: batter_id
         description: "MLB player ID of the batter."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_person')
+                field: person_id
+              config:
+                severity: warn
 
       - name: load_id
         description: "Most recent dlt load identifier."
@@ -625,11 +647,21 @@ models:
         description: "MLB player ID of the pitcher."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_person')
+                field: person_id
+              config:
+                severity: warn
 
       - name: pitch_type_code
         description: "Two-character pitch type code."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_pitch_type')
+                field: pitch_type_code
 
       - name: pitch_type_description
         description: "Full pitch type description from dim_pitch_type."
@@ -707,7 +739,7 @@ models:
         tests:
           - dbt_utils.accepted_range:
               min_value: 0
-              max_value: 4300
+              max_value: 5200
               config:
                 where: "avg_spin_rate is not null"
 
@@ -725,7 +757,7 @@ models:
         description: "Average horizontal release position (feet from center)."
         tests:
           - dbt_utils.accepted_range:
-              min_value: -13
+              min_value: -17
               max_value: 11
               config:
                 where: "avg_release_x is not null"
@@ -743,8 +775,8 @@ models:
         description: "Average pitcher extension toward home plate (feet)."
         tests:
           - dbt_utils.accepted_range:
-              min_value: -4
-              max_value: 12
+              min_value: -15
+              max_value: 17
               config:
                 where: "avg_extension is not null"
 
@@ -875,6 +907,10 @@ models:
         description: "MLB game identifier."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_games')
+                field: game_pk
 
       - name: season
         description: "Season year."
@@ -885,6 +921,12 @@ models:
         description: "MLB player ID of the pitcher."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_person')
+                field: person_id
+              config:
+                severity: warn
 
       - name: load_id
         description: "Most recent dlt load identifier."

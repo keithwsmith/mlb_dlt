@@ -13,6 +13,13 @@
     purely because 'R' > 'O'. Sources are now explicitly prioritized
     (mlbplayers as the authoritative source, falling back to player_stats,
     then rosters) and the highest-priority non-null row per code wins.
+
+    Award recipients (dw.award_recipients) are a fourth, lowest-priority
+    source. They carry depth-chart / role codes the other three never use
+    (C Closer, E Relief Pitcher, F/G handed relievers, K/L handed pitchers,
+    M/N handed starters, S Starting Pitcher, U/V/W utility, X Unknown), so
+    those codes are only added from here; codes the other sources already
+    have keep their existing names.
 */
 
 with all_positions as (
@@ -47,6 +54,17 @@ with all_positions as (
         3                                 as source_priority
     from {{ source('dw', 'rosters') }}
     where position__code is not null
+
+    union all
+
+    select
+        position_code,
+        position_name,
+        position_type,
+        position_abbreviation,
+        4                                 as source_priority
+    from {{ source('dw', 'award_recipients') }}
+    where position_code is not null
 
 ),
 

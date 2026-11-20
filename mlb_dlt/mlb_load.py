@@ -166,6 +166,72 @@ def get_loaded_pitch_game_pks() -> set:
         return set()
 
 
+# Seasons before this have little or no pitch-level data in the API, so
+# the incremental play_events load doesn't keep retrying them. Used only
+# when dw.play_events is empty; otherwise the earliest season already in
+# dw.play_events is the floor.
+PLAY_EVENTS_DEFAULT_START_YEAR = 2020
+
+# Parallel playByPlay calls. Was 75, which invited rate-limit failures.
+PBP_WORKERS = 20
+
+
+def get_play_events_floor_season() -> int:
+    """Earliest season already in dw.play_events, or the default."""
+    try:
+        conn = pyodbc.connect(DW_CONNECTION_STRING, timeout=10)
+        cursor = conn.cursor()
+        cursor.execute("SELECT MIN(TRY_CAST(season AS INT)) FROM dw.play_events")
+        row = cursor.fetchone()
+        conn.close()
+        if row and row[0]:
+            return int(row[0])
+    except pyodbc.Error:
+        pass  # first run: dw.play_events doesn't exist yet
+    return PLAY_EVENTS_DEFAULT_START_YEAR
+
+
+def get_games_for_play_events(start_year: int, end_year: int, include_loaded: bool = False) -> list:
+    """
+    (season, game_pk) for every Final, non-exhibition, non-All-Star game in
+    dw.games for the given seasons -- the same rule as
+    get_valid_game_pks_from_dw, so dbt relationship tests still hold.
+
+    Unless include_loaded=True, games that already have rows in
+    dw.play_events are left out. This is what makes the load self-healing:
+    any game that failed, or was missed on an earlier run, is simply still
+    "missing" and gets picked up next time.
+    """
+    base_sql = """
+        SELECT TRY_CAST(g.season AS INT) AS season, g.game_pk
+        FROM dw.games g
+        WHERE g.status__abstract_game_state = 'Final'
+          AND g.game_type NOT IN ('E', 'A')
+          AND TRY_CAST(g.season AS INT) BETWEEN ? AND ?
+    """
+    anti_join = """
+          AND NOT EXISTS (SELECT 1 FROM dw.play_events p WHERE p.game_pk = g.game_pk)
+    """
+    order_by = " ORDER BY g.game_pk"
+
+    try:
+        conn = pyodbc.connect(DW_CONNECTION_STRING, timeout=10)
+        cursor = conn.cursor()
+        try:
+            sql = base_sql + ("" if include_loaded else anti_join) + order_by
+            cursor.execute(sql, start_year, end_year)
+        except pyodbc.Error:
+            # First run: dw.play_events doesn't exist yet, so nothing is loaded.
+            cursor.execute(base_sql + order_by, start_year, end_year)
+        rows = [(int(r[0]), int(r[1])) for r in cursor.fetchall() if r[0] is not None]
+        conn.close()
+        return rows
+    except pyodbc.Error as e:
+        print(f"Could not query games for play_events from dw.games: {e}")
+        print("   Nothing will be loaded.")
+        return []
+
+
 # ----------------------------
 # HTTP helper
 # ----------------------------
@@ -433,6 +499,113 @@ def teams_resource(start_year: int = None, end_year: int = None):
 
 
 # ----------------------------
+# Venues
+# ----------------------------
+# /venues returns every ballpark the API knows about, including closed and
+# historical ones (Ebbets Field, the Polo Grounds, old Yankee Stadium) and
+# one-off neutral sites (Tokyo Dome, Field of Dreams, London Stadium) -- not
+# just the parks that are some team's home today. dw.teams only carries each
+# team's home park per season, so games played anywhere else have a
+# venue__id with no matching venue, which is what the dim_games.venue_id ->
+# dim_venue relationships test catches.
+VENUE_HYDRATE = "location,fieldInfo,timezone"
+VENUE_BATCH_SIZE = 100
+
+
+def get_venue_ids_from_dw() -> list:
+    """
+    Every venue id referenced anywhere in dw: games played there, plus each
+    team's home and spring-training park. Loading exactly these ids
+    guarantees every venue_id in dim_games and dim_teams has a dim_venue row.
+    A query that fails (e.g. a table not loaded yet) is skipped, not fatal.
+    """
+    queries = [
+        "SELECT DISTINCT venue__id FROM dw.games WHERE venue__id IS NOT NULL",
+        "SELECT DISTINCT venue__id FROM dw.teams WHERE venue__id IS NOT NULL",
+        "SELECT DISTINCT spring_venue__id FROM dw.teams WHERE spring_venue__id IS NOT NULL",
+    ]
+    ids = set()
+    try:
+        conn = pyodbc.connect(DW_CONNECTION_STRING, timeout=10)
+    except pyodbc.Error as e:
+        print(f"[venues] could not connect to dw: {e}")
+        return []
+    try:
+        cursor = conn.cursor()
+        for sql in queries:
+            try:
+                cursor.execute(sql)
+                ids.update(int(row[0]) for row in cursor.fetchall() if row[0] is not None)
+            except pyodbc.Error as e:
+                print(f"[venues] skipped ({e.args[0] if e.args else e}): {sql}")
+    finally:
+        conn.close()
+    print(f"[venues] {len(ids)} distinct venue ids referenced in dw.")
+    return sorted(ids)
+
+
+@dlt.resource(name="venues", write_disposition="merge", primary_key=["id"])
+def venues_resource(start_year: int = None, end_year: int = None, venue_ids: list = None):
+    """
+    One row per venue (merge on id, so re-running is safe).
+
+    Which venues are fetched:
+      - --venue-ids given:        just those ids.
+      - --start-year/--end-year:  every venue the API lists for MLB (sportId 1)
+                                  in each season of the range.
+      - neither (default):        every venue id used in dw.games or dw.teams.
+                                  Load games for the seasons you want first.
+
+    Each row keeps the API's nested objects, which dlt flattens into columns
+    such as location__city, location__state_abbrev, location__country,
+    field_info__capacity, field_info__roof_type, time_zone__id.
+    """
+    if start_year is not None or end_year is not None:
+        start_year = start_year or 1901
+        end_year = end_year or datetime.now().year
+        seen = set()
+        for year in range(start_year, end_year + 1):
+            try:
+                data = get_json(f"{BASE_URL}venues",
+                                {"sportIds": 1, "season": year, "hydrate": VENUE_HYDRATE})
+            except Exception as e:
+                print(f"[venues] fetch failed for season {year}: {e}")
+                continue
+            new = [v for v in data.get("venues", []) if v.get("id") not in seen]
+            seen.update(v.get("id") for v in new)
+            print(f"[venues] season {year}: {len(new)} new venue(s)")
+            if new:
+                yield new
+        return
+
+    ids = venue_ids or get_venue_ids_from_dw()
+    if not ids:
+        print("[venues] no venue ids to fetch. Load games/teams first, or pass --venue-ids.")
+        return
+
+    found = set()
+    for i in range(0, len(ids), VENUE_BATCH_SIZE):
+        batch = ids[i:i + VENUE_BATCH_SIZE]
+        try:
+            data = get_json(f"{BASE_URL}venues", {
+                "venueIds": ",".join(str(v) for v in batch),
+                "hydrate": VENUE_HYDRATE,
+            })
+        except Exception as e:
+            print(f"[venues] batch starting at id {batch[0]} failed: {e}")
+            continue
+        venues = data.get("venues", [])
+        found.update(v.get("id") for v in venues)
+        if venues:
+            yield venues
+
+    missing = sorted(set(ids) - found)
+    print(f"[venues] loaded {len(found)} of {len(ids)} venue ids.")
+    if missing:
+        print(f"[venues] not returned by the API ({len(missing)}): {missing}")
+
+
+# ----------------------------
 # Draft Picks
 # ----------------------------
 @dlt.resource(
@@ -478,6 +651,15 @@ HIT_EVENT_TYPES = {"single", "double", "triple", "home_run"}
 
 
 def fetch_game_pbp(year, game_pk):
+    """
+    Every pitch in one game, as flat rows for dw.play_events.
+
+    Errors are NOT swallowed any more. The old version ended with
+    `except Exception: return []`, so a timeout or rate-limit looked exactly
+    like a game with no pitches: nothing was logged and the game was never
+    retried. Now the error reaches play_events_resource, which logs the
+    game_pk and leaves it missing so the next run fetches it again.
+    """
     try:
         pbp = get_json(f"{BASE_URL}/game/{game_pk}/playByPlay")
         events = []
@@ -531,8 +713,8 @@ def fetch_game_pbp(year, game_pk):
                 events.append(event)
 
         return events
-    except Exception:
-        return []
+    except Exception as e:
+        raise RuntimeError(f"playByPlay fetch failed for game {game_pk}: {e}") from e
 
 
 # ----------------------------
@@ -641,11 +823,23 @@ def rosters_resource(start_year: int = None, end_year: int = None):
 # simply comes back empty, so it's safe to leave in the list.
 COACH_SPORT_IDS = {
     1: "MLB",
+	15: "Short-Season A",
     11: "AAA",
     12: "AA",
     13: "High-A",
     14: "Single-A",
     16: "Rookie",
+	17: "Winter Leagues",
+	21: "Minors",
+	23: "Independent Leagues",
+	61: "Negro League",
+	32: "Korean Baseball Organization",
+	31: "Nippon Professional Baseball",
+	51: "International Baseball",
+	509: "International Baseball (18U)",
+	510: "International Baseball (16 and under)",
+	6005: "International Baseball (amateur)",
+	52: "Olympic Baseball"
 }
 
 
@@ -681,6 +875,249 @@ def milb_teams_resource(start_year: int = None, end_year: int = None):
                 if team_id and team_id not in seen_ids:
                     seen_ids.add(team_id)
                     yield team
+
+
+# ----------------------------
+# Teams looked up by id (sport unknown)
+# ----------------------------
+# Some team ids in the warehouse (award recipients, mostly) belong to clubs
+# that no sportId/season sweep returns: defunct, renamed or relocated clubs,
+# or levels the API no longer lists. /teams/{id} works for any team id
+# without a sportId, and /teams/history returns every past version of a
+# club. Rows go into dw.milb_teams (same shape, merge on id + season), so
+# dim_teams picks them up with no dbt change; their level comes from
+# sport_id ('Other' if it isn't one of the mapped levels).
+
+def get_missing_team_ids() -> list:
+    """(team_id, season) for award-recipient teams not in dim_teams.
+    team_id 0 means "no team" and is skipped."""
+    sql = """
+        SELECT ar.team_id, MIN(TRY_CAST(ar.season AS INT)) AS season
+        FROM silver.dim_award_recipient ar
+        WHERE ar.team_id IS NOT NULL
+          AND ar.team_id <> 0
+          AND NOT EXISTS (SELECT 1 FROM silver.dim_teams t WHERE t.team_id = ar.team_id)
+        GROUP BY ar.team_id
+        ORDER BY ar.team_id
+    """
+    try:
+        conn = pyodbc.connect(DW_CONNECTION_STRING, timeout=10)
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        rows = [(int(r[0]), int(r[1]) if r[1] is not None else None) for r in cursor.fetchall()]
+        conn.close()
+        return rows
+    except pyodbc.Error as e:
+        print(f"[missing_teams] could not query missing team ids: {e}")
+        return []
+
+
+def fetch_team_any_sport(team_id: int, season: int = None) -> list:
+    """
+    Every version of one team the API knows, without needing its sportId.
+      1. /teams/{id}?season=YYYY   -- the team as of the season it's needed for
+      2. /teams/history?teamIds=id -- all past versions (names, cities, levels)
+      3. /teams/{id}               -- current version, as a last resort
+    Each returned dict has a 'season' (required by dw.milb_teams).
+    """
+    found = {}
+
+    def keep(team, fallback_season):
+        if not team or not team.get("id"):
+            return
+        s = team.get("season") or fallback_season
+        if s is None:
+            return
+        team = dict(team)
+        team["season"] = int(s)
+        found[(team["id"], team["season"])] = team
+
+    if season:
+        try:
+            data = get_json(f"{BASE_URL}teams/{team_id}", {"season": season})
+            for t in data.get("teams", []):
+                keep(t, season)
+        except Exception as e:
+            print(f"[missing_teams] /teams/{team_id}?season={season} failed: {e}")
+
+    try:
+        data = get_json(f"{BASE_URL}teams/history", {"teamIds": team_id})
+        for t in data.get("teams", []):
+            keep(t, season)
+    except Exception as e:
+        print(f"[missing_teams] /teams/history?teamIds={team_id} failed: {e}")
+
+    if not found:
+        try:
+            data = get_json(f"{BASE_URL}teams/{team_id}")
+            for t in data.get("teams", []):
+                keep(t, season or datetime.now().year)
+        except Exception as e:
+            print(f"[missing_teams] /teams/{team_id} failed: {e}")
+
+    return list(found.values())
+
+
+@dlt.resource(name="missing_teams", table_name="milb_teams",
+              write_disposition="merge", primary_key=["id", "season"])
+def missing_teams_resource(team_ids: list = None):
+    """
+    Loads teams by id when the sportId isn't known. With no ids passed,
+    looks up every award-recipient team that dim_teams doesn't have.
+
+        python mlb_load.py missing_teams
+        python mlb_load.py missing_teams --team-ids 62 64 5318
+    """
+    if team_ids:
+        targets = [(int(t), None) for t in team_ids]
+    else:
+        targets = get_missing_team_ids()
+
+    print(f"[missing_teams] looking up {len(targets)} team ids")
+    not_found = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(fetch_team_any_sport, t, s): t for t, s in targets}
+        for future in as_completed(futures):
+            team_id = futures[future]
+            teams = future.result()
+            if not teams:
+                not_found.append(team_id)
+                continue
+            sports = sorted({(t.get("sport") or {}).get("id") for t in teams if t.get("sport")}, key=str)
+            print(f"[missing_teams] {team_id}: {teams[0].get('name')} -- "
+                  f"{len(teams)} season(s), sportId {sports}")
+            yield teams
+
+    if not_found:
+        print(f"[missing_teams] the API has no team for ids: {sorted(not_found)}")
+
+
+# ----------------------------
+# Minor league players
+# ----------------------------
+# /sports/{sportId}/players?season=YYYY returns every player who appeared at
+# that level in that season -- the minor-league equivalent of the
+# /sports/1/players call behind dw.mlbplayers. One row per player per level
+# per season: a player promoted from AA to AAA mid-season gets one row for
+# each level. MLB (sportId 1) is skipped here because dw.mlbplayers already
+# holds it, so dw.milb_players stays minor-league only.
+#
+# Columns are declared so the table keeps the same shape even when a level
+# returns no value for a field (dlt otherwise drops all-NULL columns).
+MILB_PLAYER_COLUMNS = {
+    "id": {"data_type": "bigint", "nullable": False},
+    "season": {"data_type": "bigint", "nullable": False},
+    "sport_id": {"data_type": "bigint", "nullable": False},
+    "level": {"data_type": "text"},
+    "full_name": {"data_type": "text"},
+    "first_name": {"data_type": "text"},
+    "last_name": {"data_type": "text"},
+    "birth_date": {"data_type": "text"},
+    "birth_city": {"data_type": "text"},
+    "birth_state_province": {"data_type": "text"},
+    "birth_country": {"data_type": "text"},
+    "height": {"data_type": "text"},
+    "weight": {"data_type": "bigint"},
+    "primary_number": {"data_type": "text"},
+    "primary_position__code": {"data_type": "text"},
+    "primary_position__name": {"data_type": "text"},
+    "primary_position__type": {"data_type": "text"},
+    "primary_position__abbreviation": {"data_type": "text"},
+    "bat_side__code": {"data_type": "text"},
+    "pitch_hand__code": {"data_type": "text"},
+    "current_team_id": {"data_type": "bigint"},
+    "current_team_name": {"data_type": "text"},
+    "parent_org_id": {"data_type": "bigint"},
+    "draft_year": {"data_type": "bigint"},
+    "mlb_debut_date": {"data_type": "text"},
+    "active": {"data_type": "bool"},
+    "fetched_at": {"data_type": "text"},
+}
+
+
+def fetch_milb_players(sport_id: int, season: int) -> list:
+    """Every player at one minor league level in one season, as flat rows.
+    Returns [] if the level has no data for that season (e.g. sportId 16
+    before rookie-league data exists) or the call fails."""
+    try:
+        data = get_json(f"{BASE_URL}sports/{sport_id}/players", {"season": season})
+    except Exception as e:
+        print(f"[milb_players] fetch failed for sportId {sport_id}, season {season}: {e}")
+        return []
+
+    now = datetime.now().isoformat(timespec="seconds")
+    rows = []
+    for p in data.get("people", []):
+        if p.get("id") is None:
+            continue
+        pos = p.get("primaryPosition") or {}
+        team = p.get("currentTeam") or {}
+        rows.append({
+            "id": p.get("id"),
+            "season": season,
+            "sport_id": sport_id,
+            "level": COACH_SPORT_IDS.get(sport_id),
+            "full_name": p.get("fullName"),
+            "first_name": p.get("firstName"),
+            "last_name": p.get("lastName"),
+            "birth_date": p.get("birthDate"),
+            "birth_city": p.get("birthCity"),
+            "birth_state_province": p.get("birthStateProvince"),
+            "birth_country": p.get("birthCountry"),
+            "height": p.get("height"),
+            "weight": p.get("weight"),
+            "primary_number": p.get("primaryNumber"),
+            "primary_position__code": pos.get("code"),
+            "primary_position__name": pos.get("name"),
+            "primary_position__type": pos.get("type"),
+            "primary_position__abbreviation": pos.get("abbreviation"),
+            "bat_side__code": (p.get("batSide") or {}).get("code"),
+            "pitch_hand__code": (p.get("pitchHand") or {}).get("code"),
+            # Team as reported by the API for this season; may be missing
+            # for older seasons.
+            "current_team_id": team.get("id"),
+            "current_team_name": team.get("name"),
+            "parent_org_id": team.get("parentOrgId"),
+            "draft_year": p.get("draftYear"),
+            "mlb_debut_date": p.get("mlbDebutDate"),
+            "active": p.get("active"),
+            "fetched_at": now,
+        })
+    return rows
+
+
+@dlt.resource(
+    name="milb_players",
+    write_disposition="merge",
+    primary_key=["id", "season", "sport_id"],
+    columns=MILB_PLAYER_COLUMNS,
+)
+def milb_players_resource(start_year: int = None, end_year: int = None):
+    """
+    All minor league players for each season in [start_year, end_year],
+    one level at a time, using the levels in COACH_SPORT_IDS (MLB excluded).
+    Defaults to the current season, so
+
+        python mlb_load.py milb_players --start-year 2025
+
+    loads just 2025, and --start-year 2015 --end-year 2025 backfills a range.
+    Re-running a season is safe: rows merge on (id, season, sport_id).
+    """
+    current_year = datetime.now().year
+    start_year = start_year or current_year
+    end_year = end_year or start_year
+
+    sport_ids = [s for s in COACH_SPORT_IDS if s != 1]
+    for year in range(start_year, end_year + 1):
+        with ThreadPoolExecutor(max_workers=len(sport_ids)) as executor:
+            futures = {executor.submit(fetch_milb_players, s, year): s for s in sport_ids}
+            for future in as_completed(futures):
+                sport_id = futures[future]
+                rows = future.result()
+                print(f"[milb_players] {year} {COACH_SPORT_IDS[sport_id]} "
+                      f"(sportId {sport_id}): {len(rows)} players")
+                if rows:
+                    yield rows
 
 
 def fetch_team_coaches(team: dict, sport_id: int, season: int) -> list:
@@ -796,6 +1233,10 @@ def get_person_ids_needing_details(scope: str = "coaches", refresh: bool = False
     scope = "coaches" : every person in dw.team_coaches
     scope = "all"     : coaches + every player in dw.player_transactions + dw.mlbplayers
                         (gives schools for players too -- many more API calls)
+    scope = "awards"  : every award recipient in dw.award_recipients -- includes
+                        executives, broadcasters, celebrities and independent /
+                        winter league players who are in no roster or staff table,
+                        so dim_person can include them
     Ids already in dw.people_details are skipped unless refresh=True.
     """
     id_sql = {
@@ -804,6 +1245,11 @@ def get_person_ids_needing_details(scope: str = "coaches", refresh: bool = False
             SELECT person_id AS id FROM dw.team_coaches
             UNION SELECT player_id FROM dw.player_transactions WHERE player_id IS NOT NULL
             UNION SELECT id FROM dw.mlbplayers WHERE id IS NOT NULL
+        """,
+        "awards": """
+            SELECT DISTINCT player_id AS id
+            FROM dw.award_recipients
+            WHERE player_id IS NOT NULL
         """,
     }[scope]
 
@@ -1348,9 +1794,17 @@ def fetch_boxscore_player_stats(game_pk: int) -> list:
     """
     One row per player per game, for both the away and home side, pulled from
     the same /game/{pk}/boxscore endpoint umpires_resource already calls
-    (that resource only reads `officials` off this payload — everything
-    under teams.{home,away}.players is the per-player batting/pitching/
-    fielding line for this specific game).
+    (that resource only reads `officials` off this payload).
+
+    ONLY PLAYERS WHO APPEARED IN THE GAME ARE KEPT.
+    teams.{home,away}.players is the team's ROSTER for the game, not the
+    list of players who played: bench players and the unused bullpen are in
+    it too, with empty stats. That produced impossible rows such as player
+    113130 (Dick Davis) in three different teams' games on 1982-06-22, and
+    ~130 "games" by late June with only ~30 that had any stats.
+    A player counts as having appeared if the boxscore lists him in the
+    side's `batters` or `pitchers` list, or he has any batting, pitching or
+    fielding stats for the game.
     """
     try:
         bs = get_json(f"{BASE_URL}/game/{game_pk}/boxscore")
@@ -1366,6 +1820,10 @@ def fetch_boxscore_player_stats(game_pk: int) -> list:
         team_id = team.get("id")
         team_name = team.get("name")
 
+        # Player ids who actually batted or pitched in this game. Bench and
+        # unused bullpen arms are in side_data["bench"] / ["bullpen"] instead.
+        appeared_ids = set(side_data.get("batters") or []) | set(side_data.get("pitchers") or [])
+
         for player in side_data.get("players", {}).values():
             person = player.get("person") or {}
             position = player.get("position") or {}
@@ -1373,6 +1831,12 @@ def fetch_boxscore_player_stats(game_pk: int) -> list:
             batting = stats.get("batting") or {}
             pitching = stats.get("pitching") or {}
             fielding = stats.get("fielding") or {}
+
+            # Skip roster-only listings (see docstring).
+            if person.get("id") is None:
+                continue
+            if person.get("id") not in appeared_ids and not (batting or pitching or fielding):
+                continue
 
             rows.append({
                 "game_pk": game_pk,
@@ -1552,89 +2016,51 @@ def stats_resource(start_year: int = None, end_year: int = None):
 )
 def play_events_resource(start_year: int = None, end_year: int = None, reload: bool = False):
     """
-    reload=True re-fetches games that are already in dw.play_events (merge
-    updates them in place). Use it with --start-year/--end-year to backfill
-    new fields such as result_event_type onto games loaded earlier.
-    """
-    user_provided_range = start_year is not None or end_year is not None
-    current_year = datetime.now().year
-    max_date = get_max_game_date()
+    Pitch-level play-by-play for every Final game in dw.games that doesn't
+    have it yet.
 
+    How games are chosen:
+      - No years given (the daily pipeline run): every season from the
+        earliest one already in dw.play_events (or 2020 on a first run)
+        to this year. Games already loaded are skipped, so only new games
+        AND any game missed or failed on an earlier run are fetched.
+      - --start-year/--end-year: the same, limited to those seasons.
+      - --reload (with years): re-fetches games already loaded too (merge
+        updates them in place), e.g. to backfill new fields.
+
+    Previously the daily run only asked the schedule for games on or after
+    MAX(game_date) in dw.games. pipeline.py loads games first, so that was
+    always "today", and a game whose pitches failed to load was never
+    tried again. dw.games is now the list to work from, and dw.play_events
+    says what's done.
+    """
+    current_year = datetime.now().year
     if start_year is None:
-        start_year = max_date.year if max_date else 2020
+        start_year = get_play_events_floor_season()
     if end_year is None:
         end_year = current_year
 
-    if max_date and not user_provided_range:
-        start_date_str = max_date.strftime("%Y-%m-%d")
-        print(f"Incremental load from {start_date_str}")
-    else:
-        start_date_str = None
-        print(f"Full/backfill load from {start_year} to {end_year}")
-
-    all_games = []
-    schedule_params = []
-    for year in range(start_year, end_year + 1):
-        params = {"sportId": 1, "season": year}
-        if start_date_str and year == start_year:
-            params["startDate"] = start_date_str
-            params["endDate"] = f"{year}-12-31"
-        schedule_params.append((year, params))
-
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        schedule_futures = {
-            executor.submit(get_json, f"{BASE_URL}/schedule", params): year
-            for year, params in schedule_params
-        }
-        for future in as_completed(schedule_futures):
-            year = schedule_futures[future]
-            try:
-                schedule = future.result()
-            except Exception as e:
-                print(f"Schedule fetch failed for {year}: {e}")
-                continue
-            for date_entry in schedule.get("dates", []):
-                for game in date_entry.get("games", []):
-                    game_pk = game.get("gamePk")
-                    status = game.get("status", {}).get("abstractGameState")
-                    game_type = game.get("gameType", "")
-                    if game_type in ("E", "A"):
-                        continue
-                    if game_pk and status == "Final":
-                        all_games.append((year, game_pk))
-
-    # Filter to only game_pks that exist in dw.games — guarantees dbt
-    # relationship tests pass.
-    valid_pks = get_valid_game_pks_from_dw()
-    before = len(all_games)
-    all_games = [(y, pk) for y, pk in all_games if pk in valid_pks]
-    print(f"{before} total Final games from schedule, "
-          f"{len(all_games)} exist in dw.games...")
-
-    # Skip games whose pitches are already loaded — an efficiency filter,
-    # not a correctness one, now that play_events uses merge disposition
-    # (see get_loaded_pitch_game_pks docstring for why this is separate
-    # from the valid_pks filter above). Explicit --start-year/--end-year
-    # backfills still go through this same filter; pass force_reload=True
-    # below (or just query/delete the specific game_pks first) if you
-    # ever need to deliberately reprocess an already-loaded game.
+    games = get_games_for_play_events(start_year, end_year, include_loaded=reload)
     if reload:
-        print(f"--reload: re-fetching all {len(all_games)} games, including ones already loaded...")
+        print(f"[play_events] --reload: re-fetching all {len(games)} Final games "
+              f"in dw.games for {start_year}-{end_year}")
     else:
-        loaded_pks = get_loaded_pitch_game_pks()
-        before = len(all_games)
-        all_games = [(y, pk) for y, pk in all_games if pk not in loaded_pks]
-        print(f"{before} candidate games, {len(all_games)} not yet loaded and will be fetched...")
+        print(f"[play_events] {len(games)} Final games in dw.games for "
+              f"{start_year}-{end_year} have no pitch data yet")
 
-    if not all_games:
-        print("Nothing new to load.")
+    if not games:
+        print("[play_events] Nothing new to load.")
         return
 
     BATCH_SIZE = 200
-    with ThreadPoolExecutor(max_workers=75) as executor:
+    failed = []
+    no_pitches = []
+    loaded = 0
+
+    with ThreadPoolExecutor(max_workers=PBP_WORKERS) as executor:
         futures = {
             executor.submit(fetch_game_pbp, year, game_pk): game_pk
-            for year, game_pk in all_games
+            for year, game_pk in games
         }
         batch = []
         done = 0
@@ -1642,23 +2068,40 @@ def play_events_resource(start_year: int = None, end_year: int = None, reload: b
 
         for future in as_completed(futures):
             done += 1
+            game_pk = futures[future]
             try:
                 events = future.result()
-                batch.extend(events)
             except Exception as e:
-                game_pk = futures[future]
-                print(f"PBP failed for game {game_pk}: {e}")
+                failed.append(game_pk)
+                print(f"[play_events] PBP failed for game {game_pk}: {e}")
                 continue
+
+            if not events:
+                # The API answered but the game has no pitch events. It stays
+                # "missing" and is tried again next run; see the summary below.
+                no_pitches.append(game_pk)
+                continue
+
+            loaded += 1
+            batch.extend(events)
 
             if len(batch) >= BATCH_SIZE:
                 yield batch
                 batch = []
 
             if done % 500 == 0:
-                print(f"Progress: {done}/{total} games processed")
+                print(f"[play_events] Progress: {done}/{total} games processed")
 
         if batch:
             yield batch
+
+    print(f"[play_events] {loaded} games loaded, {len(failed)} failed, "
+          f"{len(no_pitches)} returned no pitches.")
+    if failed:
+        print(f"[play_events] Failed (will be retried next run): {sorted(failed)}")
+    if no_pitches:
+        print(f"[play_events] No pitch events from the API: {sorted(no_pitches)[:50]}"
+              + (" ..." if len(no_pitches) > 50 else ""))
 
 
 # ----------------------------
@@ -1671,12 +2114,17 @@ if __name__ == "__main__":
     parser.add_argument("resource", help="Resource to run (e.g. play_events, games, seasons)")
     parser.add_argument("--start-year", type=int, default=None)
     parser.add_argument("--end-year", type=int, default=None)
-    parser.add_argument("--scope", choices=["coaches", "all"], default="coaches",
-                        help="people_details only: fetch coaches (default) or coaches + all players")
+    parser.add_argument("--scope", choices=["coaches", "all", "awards"], default="coaches",
+                        help="people_details only: fetch coaches (default), coaches + all players, "
+                             "or every award recipient")
     parser.add_argument("--refresh", action="store_true",
                         help="people_details only: re-fetch people already loaded")
     parser.add_argument("--reload", action="store_true",
                         help="play_events only: re-fetch games already loaded (use with --start-year/--end-year)")
+    parser.add_argument("--team-ids", type=int, nargs="+", default=None,
+                        help="missing_teams only: team ids to look up (default: award-recipient teams missing from dim_teams)")
+    parser.add_argument("--venue-ids", type=int, nargs="+", default=None,
+                        help="venues only: venue ids to load (default: every venue id used in dw.games / dw.teams)")
     args = parser.parse_args()
 
     pipeline = dlt.pipeline(
@@ -1690,12 +2138,15 @@ if __name__ == "__main__":
         "games": lambda: games_resource(args.start_year, args.end_year),
         "seasons": lambda: seasons_resource(args.start_year, args.end_year),
         "teams": lambda: teams_resource(args.start_year, args.end_year),
+        "venues": lambda: venues_resource(args.start_year, args.end_year, args.venue_ids),
         "draft": draft_resource,
         "players": players_resource,
         "player_stats": lambda: stats_resource(args.start_year, args.end_year),
         "player_game_stats": lambda: player_game_stats_resource(args.start_year, args.end_year),
         "rosters": lambda: rosters_resource(args.start_year, args.end_year),
         "milb_teams": lambda: milb_teams_resource(args.start_year, args.end_year),
+        "missing_teams": lambda: missing_teams_resource(args.team_ids),
+        "milb_players": lambda: milb_players_resource(args.start_year, args.end_year),
         "coaches": lambda: coaches_resource(args.start_year, args.end_year),
         "people_details": lambda: people_details_resource(args.scope, args.refresh),
         "awards": award_recipients_resource,

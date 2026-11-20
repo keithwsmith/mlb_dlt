@@ -82,7 +82,11 @@ SELECT
     dp.player_version_key AS player_key,
     dt.team_key AS team_key,
     ds.season_key AS season_key,
-    
+
+    -- Natural key kept alongside the surrogate key, so a stale or missing
+    -- player_key can always be traced (and re-resolved) from the fact row.
+    ps.player_id,
+
     -- Common fields
     ps.season,
     ps.age,
@@ -146,10 +150,21 @@ SELECT
     
 FROM source_stats ps
 
--- Join to player dimension
-LEFT JOIN {{ ref('dim_player') }} dp
-    ON ps.player_id = dp.player_id
-    AND dp.is_current = 1
+-- Join to player dimension: the version in effect for THIS stat row's season,
+-- not the player's current version. (Joining on is_current = 1 gave a 2019
+-- stat line the player's 2026 team/position version.)
+-- Picks the latest version that started in or before ps.season; if the
+-- player's first version starts after ps.season, falls back to the earliest.
+OUTER APPLY (
+    SELECT TOP 1 d.player_version_key
+    FROM {{ ref('dim_player') }} d
+    WHERE d.player_id = ps.player_id
+    ORDER BY
+        CASE WHEN d.effective_season <= ps.season THEN 0 ELSE 1 END,
+        CASE WHEN d.effective_season <= ps.season THEN d.effective_season END DESC,
+        d.effective_season ASC,
+        d.version_number DESC
+) dp
     
 -- Join to team dimension
 LEFT JOIN {{ ref('dim_teams') }} dt

@@ -19,6 +19,12 @@ models:
         tests:
           - unique
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_games')
+                field: game_pk
+              config:
+                severity: warn
           
 
       # --- Weather ---
@@ -57,18 +63,39 @@ models:
       # --- Decisions ---
       - name: winning_pitcher_id
         description: Unique identifier for the pitcher credited with the win.
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_person')
+                field: person_id
+              config:
+                severity: warn
 
       - name: winning_pitcher_name
         description: Full name of the winning pitcher.
 
       - name: losing_pitcher_id
         description: Unique identifier for the pitcher charged with the loss.
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_player')
+                field: player_id
+              config:
+                severity: warn
 
       - name: losing_pitcher_name
         description: Full name of the losing pitcher.
 
       - name: save_pitcher_id
         description: Unique identifier for the pitcher credited with the save, if applicable.
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_person')
+                field: person_id
+              config:
+                severity: warn
 
       - name: save_pitcher_name
         description: Full name of the save pitcher, if applicable.
@@ -339,6 +366,12 @@ models:
           specific game to which the umpire was assigned.
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_games')
+                field: game_pk
+              config:
+                severity: warn
 
       - name: official_type
         description: >
@@ -383,18 +416,25 @@ models:
   - name: dim_challenges
     description: >
       Dimension table containing play review and challenge data from MLB games.
-      Each row represents a unique challenged play, identified by the combination
-      of game and play start time. Built as an incremental model, loading only
-      new records based on load_id.
+      Each row represents one reviewed play event, identified by MLB's own
+      event identifiers (game_pk + at_bat_index + event_index), which stay the
+      same when a game is reloaded. Built as an incremental model, loading only
+      new records based on load_id. Run with --full-refresh after games are
+      removed from dw.play_events, since incremental runs never delete rows.
     config:
       materialized: incremental
-      unique_key: ['game_pk', 'start_time','pfx_id']
+      unique_key: ['game_pk', 'at_bat_index', 'event_index']
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [game_pk, at_bat_index, event_index]
 
     columns:
       - name: challenge_key
         description: >
-          Surrogate key generated from game_pk and start_time,
-          serving as the grain identifier for each challenged play.
+          Surrogate key generated from game_pk, at_bat_index and event_index,
+          serving as the grain identifier for each reviewed play event.
+          Does not change when a game is reloaded.
         tests:
           - unique
           - not_null
@@ -403,10 +443,34 @@ models:
         description: Unique identifier for the MLB game in which the challenge occurred.
         tests:
           - not_null
+          # Every challenge must belong to a known game.
+          - relationships:
+              arguments:
+                to: ref('dim_games')
+                field: game_pk
+          # Catches challenges left behind when a game is removed from
+          # dw.play_events (fix: dbt run --full-refresh --select dim_challenges).
           - relationships:
               arguments:
                 to: ref('stg_play_events')
                 field: game_pk
+
+      - name: at_bat_index
+        description: MLB's index of the plate appearance within the game. Part of the grain.
+        tests:
+          - not_null
+
+      - name: event_index
+        description: MLB's index of the event within the plate appearance. Part of the grain.
+        tests:
+          - not_null
+
+      - name: event_id
+        description: >
+          dlt row identifier (_dlt_id) of the play event from the latest load.
+          Changes when a game is reloaded, so it is NOT part of the key.
+        tests:
+          - not_null
 
       - name: review_player_link
         description: URL or resource link to the player profile associated with the reviewed play.
@@ -422,6 +486,13 @@ models:
 
       - name: review_challenge_team_id
         description: Identifier of the team that initiated the challenge or review request.
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_id
+              config:
+                severity: warn
 
       - name: review_is_overturned
         description: >
@@ -436,6 +507,13 @@ models:
 
       - name: review_player_id
         description: Unique identifier for the player involved in the reviewed play.
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_player')
+                field: player_id
+              config:
+                severity: warn
 
       - name: review_type
         description: >
@@ -446,8 +524,8 @@ models:
 
       - name: start_time
         description: >
-          Timestamp marking when the challenged play began. Forms part of the
-          composite unique key alongside game_pk and pfx_id.
+          Timestamp marking when the challenged play began. Descriptive only;
+          no longer part of the key.
         tests:
           - not_null
 
@@ -485,13 +563,22 @@ models:
   # dim_award_recipient
   # ============================================================
   - name: dim_award_recipient
-    description: "One row per player who received an award, keeping the most recent attribute values."
+    description: "One row per person, award and season: each time a player, manager or coach received an award, keeping the most recent attribute values."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [player_id, award_name, season]
     columns:
       - name: player_id
-        description: "Unique identifier for the player."
+        description: "Person who received the award: a player, manager or coach. Foreign key to dim_person (not dim_player, since managers and coaches win awards too). Not unique on its own: one person can win many awards across seasons."
         tests:
           - not_null
-          - unique
+          - relationships:
+              arguments:
+                to: ref('dim_person')
+                field: person_id
+              config:
+                severity: warn
 
       - name: player_name
         description: "Full name of the player."
@@ -502,6 +589,12 @@ models:
         description: "Position code for the player."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_position')
+                field: position_code
+              config:
+                severity: warn
 
       - name: position_name
         description: "Full position name."
@@ -522,11 +615,21 @@ models:
         description: "Team the player was on, or team that won the award."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_id
+              config:
+                severity: warn
 
       - name: award_id
         description: "Foreign key to dim_award."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_award')
+                field: award_id
 
       - name: award_name
         description: "Name of the award received."
@@ -708,7 +811,7 @@ models:
         description: "BIS player identifier."
         # Nullable
 
-      - name: person__draft_year
+      - name: person_draft_year
         description: "Draft year from person record."
         tests:
           - not_null
@@ -882,6 +985,13 @@ models:
 
       - name: person_primary_position_code
         description: "Primary position code."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_position')
+                field: position_code
+              config:
+                severity: warn
         # Nullable
 
       - name: person_primary_position_name
@@ -920,6 +1030,12 @@ models:
         description: "Drafting team ID."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_id
+              config:
+                severity: warn
 
       - name: team_name
         description: "Drafting team name."
@@ -1065,7 +1181,7 @@ models:
   # dim_games
   # ============================================================
   - name: dim_games
-    description: "One row per game with scores, teams, venue, and derived outcomes."
+    description: "One row per game (latest dlt load of each game_pk) with scores, teams, venue, and derived outcomes. Includes postponed and cancelled games; see is_postponed / is_cancelled."
     columns:
       - name: game_pk
         description: "Primary key – MLB game identifier."
@@ -1116,6 +1232,10 @@ models:
         description: "Status code."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_game_status')
+                field: status__status_code
 
       - name: is_start_time_tbd
         description: "Whether start time is TBD."
@@ -1125,6 +1245,12 @@ models:
         description: "Home team ID."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_id
+              config:
+                severity: warn
 
       - name: home_team_name
         description: "Home team name."
@@ -1143,6 +1269,12 @@ models:
         description: "Away team ID."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_id
+              config:
+                severity: warn
 
       - name: away_team_name
         description: "Away team name."
@@ -1161,6 +1293,12 @@ models:
         description: "Venue ID."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_venue')
+                field: venue_id
+              config:
+                severity: warn
 
       - name: venue_name
         description: "Venue name."
@@ -1222,10 +1360,24 @@ models:
 
       - name: winning_team_id
         description: "Derived: team ID of the winner."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_id
+              config:
+                severity: warn
         # Nullable when game not final or tied
 
       - name: losing_team_id
         description: "Derived: team ID of the loser."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_id
+              config:
+                severity: warn
         # Nullable when game not final or tied
 
       - name: run_diff
@@ -1234,6 +1386,20 @@ models:
 
       - name: is_final
         description: "Derived: 1 if detailed_state is Final."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: is_postponed
+        description: "Derived: 1 if detailed_state is Postponed. Postponed games are kept in this table (some have pitches from before the postponement); filter on this flag in reports."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: is_cancelled
+        description: "Derived: 1 if detailed_state is Cancelled. Cancelled games are kept in this table; filter on this flag in reports."
         tests:
           - not_null
           - accepted_values:
@@ -1335,7 +1501,72 @@ models:
           - accepted_values:
               values: [0, 1]
 
+      - name: player_version_key
+        description: "Surrogate key for one version of a player (player_id + version_number). fact_player_stats.player_key points here."
+        tests:
+          - not_null
+          - unique
+
+      - name: level
+        description: "'MLB' when the version comes from the 40-man rosters (stg_rosters); otherwise the minor league level from dw.milb_players. Part of change_hash, so a promotion or demotion starts a new version."
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['MLB', 'AAA', 'AA', 'High-A', 'Single-A', 'Rookie']
+
+      - name: affiliate_team_id
+        description: "Minor league club for minor league versions (dw.milb_players.current_team_id). NULL for MLB versions; team_id holds the MLB organization in both cases."
+        # Nullable for MLB versions
+
+      - name: affiliate_team_name
+        description: "Name of affiliate_team_id."
+        # Nullable for MLB versions
+
     
+  # ============================================================
+  # dim_person
+  # ============================================================
+  - name: dim_person
+    description: "One row per MLB person id: players (MLB and minor league, from dim_player) plus coaches and managers (dw.team_coaches). Flags show which roles a person has held."
+    columns:
+      - name: person_key
+        description: "Surrogate key from person_id."
+        tests:
+          - not_null
+          - unique
+
+      - name: person_id
+        description: "MLB person id."
+        tests:
+          - not_null
+          - unique
+
+      - name: full_name
+        description: "Person's full name."
+        tests:
+          - not_null
+
+      - name: is_player
+        description: "1 if the person appears in dim_player."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: is_coach
+        description: "1 if the person appears on any coaching staff in dw.team_coaches (managers included)."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
+      - name: is_manager
+        description: "1 if the person has held the Manager job (job_id MNGR)."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+
   # ============================================================
   # dim_player_stats
   # ============================================================
@@ -1350,6 +1581,10 @@ models:
         description: "MLB game identifier. Combined with player_id, forms this model's grain."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_games')
+                field: game_pk
 
       - name: season
         description: "Season year the game was played in."
@@ -1361,7 +1596,7 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: ['R']
+              values: ['Regular Season']
 
       - name: game_date
         description: "Official date of the game."
@@ -1377,6 +1612,12 @@ models:
         description: "MLB player ID. Combined with game_pk, forms this model's grain."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_person')
+                field: player_id
+              config:
+                severity: warn
 
       - name: player_name
         description: "Player full name."
@@ -1387,6 +1628,12 @@ models:
         description: "The team player_id was playing for in this game."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_id
+              config:
+                severity: warn
 
       - name: team_name
         description: "Display name of team_id."
@@ -1397,6 +1644,12 @@ models:
         description: "The team on the other side of this game."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_id
+              config:
+                severity: warn
 
       - name: opponent_team_name
         description: "Display name of opponent_team_id."
@@ -1414,6 +1667,12 @@ models:
         description: "Position player_id appeared at in this game (raw source code)."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_position')
+                field: position_code
+              config:
+                severity: warn
 
       - name: position_name
         description: "Display name of position_code."
@@ -1610,12 +1869,18 @@ models:
     tests:
       - dbt_utils.unique_combination_of_columns:
           arguments:
-            combination_of_columns: [player_id, season, game_date]
+            combination_of_columns: [player_id, game_pk]
     columns:
       - name: player_id
         description: "MLB player ID. Combined with season and game_date, forms this model's grain."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_player')
+                field: player_id
+              config:
+                severity: warn
 
       - name: player_name
         description: "Player full name."
@@ -1626,6 +1891,12 @@ models:
         description: "player_id's team as of this game_date. NOTE: cumulative totals are NOT reset/split by team_id (see model description) -- this column is for that date's context only."
         tests:
           - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_id
+              config:
+                severity: warn
 
       - name: team_name
         description: "Display name of team_id."
@@ -2051,7 +2322,7 @@ models:
   # dim_teams
   # ============================================================
   - name: dim_teams
-    description: "Team dimension keyed by team + season."
+    description: "Team dimension keyed by team + season. MLB teams from dw.teams plus minor league teams (AAA through Rookie) from dw.milb_teams; use level to tell them apart."
     columns:
       - name: team_key
         description: "Surrogate key from team_id + season."
@@ -2123,8 +2394,39 @@ models:
         tests:
           - not_null
 
+      - name: level
+        description: "Level from sport_id: 'MLB' (1), 'AAA' (11), 'AA' (12), 'High-A' (13), 'Single-A' (14), 'Rookie' (16). Same values as dim_player.level. Filter on level = 'MLB' for MLB-only lists."
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['MLB', 'AAA', 'AA', 'High-A', 'Single-A', 'Rookie','Other','Unknown']
+              config:
+                severity: warn
+
+      - name: parent_org_id
+        description: "MLB organization the team belongs to. For MLB teams, the team itself."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_teams')
+                field: team_id
+              config:
+                severity: warn
+        # Nullable: some minor league clubs have no parent (e.g. independent or older seasons)
+
+      - name: parent_org_name
+        description: "Name of parent_org_id."
+        # Nullable
+
       - name: venue_id
         description: "Home venue ID."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_venue')
+                field: venue_id
+              config:
+                severity: warn
         # Nullable
 
       - name: spring_venue_id
@@ -2225,7 +2527,7 @@ models:
           - not_null
           - unique
           - accepted_values:
-              values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14]
+              values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 99]
 
       - name: zone_description
         description: "Zone label."
@@ -2251,3 +2553,4 @@ models:
                 - Lower
                 - Chase-Up
                 - Chase-Down
+                - Unknown

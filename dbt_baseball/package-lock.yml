@@ -10,7 +10,7 @@ packages:
     version: 0.10.10
   - name: dbt_artifacts
     package: brooklyn-data/dbt_artifacts
-    version: 2.11.1
+    version: 3.0.0
   - name: audit_helper
     package: dbt-labs/audit_helper
     version: 0.14.0
@@ -20,4 +20,4 @@ packages:
   - name: dbt_profiler
     package: data-mie/dbt_profiler
     version: 1.0.0
-sha1_hash: 7d63644ec429df1fa2ee645575f78ce8cb5c9095
+sha1_hash: bbd03d620258d61dbb59ca6a6100b03e7bce57a6

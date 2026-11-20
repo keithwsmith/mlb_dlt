@@ -20,6 +20,21 @@
     walks, RBI, total bases) and batting average / OBP / slugging for the
     matchup, from the pa_* flags in int_pitches_enriched. These are 0 / NULL
     for games loaded before mlb_load.py saved plate-appearance results.
+
+    FIX (NULL zone counts): is_chase and is_in_strike_zone in
+    int_pitches_enriched are NULL when a pitch has no tracking data, and
+    SUM() returns NULL when every value in the group is NULL. So any
+    matchup with no tracked pitches got NULL chases and in_zone. Those
+    counts now use CASE ... = 1 THEN 1 ELSE 0, so they are 0, never NULL.
+
+    FIX (pitch counts): stg_play_events holds every play event, not just
+    pitches (pickoff throws, mound visits, substitutions...). total_pitches
+    was count(*), which counted those too. It now counts is_pitch = 1 only.
+    Non-pitch rows are still read, because a plate appearance can end on
+    one (an automatic intentional walk has no pitch).
+
+    NEW: tracked_pitches = pitches with location data, so a 0 in the zone
+    counts can be told apart from "no tracking data".
 */
 
 {% if is_incremental() %}
@@ -62,7 +77,9 @@ matchup_pitches as (
         pitcher_id,
         batter_id,
         max(load_id)                                    as load_id,
-        count(*)                                        as total_pitches,
+        -- real pitches only, not pickoffs / mound visits / etc.
+        sum(case when is_pitch = 1 then 1 else 0 end)   as total_pitches,
+        sum(case when is_pitch = 1 and has_location = 1 then 1 else 0 end) as tracked_pitches,
         count(distinct concat(cast(game_pk as varchar), '-', cast(at_bat_index as varchar))) as plate_appearances,
         -- pitch mix
         sum(case when pitch_type_code = 'FF' then 1 else 0 end) as fastballs,
@@ -71,12 +88,14 @@ matchup_pitches as (
         -- results
         sum(cast(is_swing as int))                      as swings,
         sum(cast(is_whiff as int))                      as whiffs,
-        sum(cast(is_chase as int))                      as chases,
+        -- "= 1 THEN 1 ELSE 0" so untracked (NULL) pitches count as 0
+        -- instead of turning the whole sum NULL
+        sum(case when is_chase = 1 then 1 else 0 end)   as chases,
         sum(cast(is_in_play as int))                    as balls_in_play,
         sum(cast(is_strike as int))                     as strikes,
         sum(cast(is_ball as int))                       as balls_total,
         -- zone
-        sum(is_in_strike_zone)                          as in_zone,
+        sum(case when is_in_strike_zone = 1 then 1 else 0 end) as in_zone,
         -- FIX (edge case): is_in_strike_zone is NULL for untracked pitches,
         -- so count out-of-zone pitches explicitly rather than deriving them
         -- as total_pitches - in_zone, which would fold untracked pitches
@@ -98,6 +117,10 @@ matchup_pitches as (
         sum(case when pa_is_complete = 1 and result_event_type = 'sac_fly' then 1 else 0 end) as sac_flies
     from pitches
     group by season, pitcher_id, batter_id
+    -- drop "matchups" made only of non-pitch events that had no pitch
+    -- and no completed plate appearance
+    having sum(case when is_pitch = 1 then 1 else 0 end) > 0
+        or sum(pa_is_complete) > 0
 ),
 
 matchup_bb as (

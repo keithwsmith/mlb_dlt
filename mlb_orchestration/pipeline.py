@@ -96,10 +96,16 @@ DLT_SCHEMA = "dw"
 # ==========================================================
 # MODELS
 # ==========================================================
+# Run in this order (one at a time -- see run_all_dimensions).
+# stg_milb_players must come before dim_player, and dim_person after it
+# (dim_person reads dim_player plus dw.team_coaches and dw.people_details).
 DIMENSION_MODELS = [
-    "stg_play_events", "stg_rosters","stg_player_transactions","dim_award", "dim_date", "dim_games", "dim_game_status", "dim_game_type",
-    "dim_game_umpires","dim_challenges","dim_game_details","dim_pitch_type", "dim_player", "dim_position", "dim_school",
-    "dim_season", "dim_teams", "dim_venue", "dim_zone", "dim_draft", "dim_award_recipient","dim_player_stats"
+    "stg_play_events", "stg_milb_players", "stg_rosters", "stg_player_transactions",
+    "dim_award", "dim_date", "dim_games", "dim_game_status", "dim_game_type",
+    "dim_game_umpires", "dim_challenges", "dim_game_details", "dim_pitch_type",
+    "dim_player", "dim_person", "dim_position", "dim_school",
+    "dim_season", "dim_teams", "dim_venue", "dim_zone", "dim_draft",
+    "dim_award_recipient", "dim_player_stats",
 ]
 intermediate = [
     "int_pitches_enriched","int_team_game_results","int_team_game_results_to_date","int_player_game_stats"
@@ -186,7 +192,15 @@ def _get_connection() -> pyodbc.Connection:
 
 
 def ensure_pipeline_table():
-    """Create the pipeline logging table if it doesn't exist."""
+    """Create the logging tables if they don't exist.
+
+    dbo.pipeline      -- one row per model/step, written by this script.
+    dbo.dbt_test_log  -- one row per dbt test result, written by the
+                         log_test_results on-run-end hook in dbt_project.yml
+                         and read by ETLMonitor (Tests Failed card and
+                         vw_lineage_with_tests). The hook only INSERTs, so
+                         the table must exist before the first dbt test.
+    """
     ddl = """
     IF NOT EXISTS (
         SELECT 1 FROM INFORMATION_SCHEMA.TABLES
@@ -214,6 +228,25 @@ def ensure_pipeline_table():
         CREATE NONCLUSTERED INDEX ix_pipeline_model
             ON dbo.pipeline (model_name, start_time DESC);
     END
+
+    IF OBJECT_ID('dbo.dbt_test_log', 'U') IS NULL
+    CREATE TABLE dbo.dbt_test_log (
+        id                      INT IDENTITY(1,1) PRIMARY KEY,
+        command_invocation_id   NVARCHAR(100)  NULL,
+        test_name               NVARCHAR(500)  NULL,
+        model_name              NVARCHAR(500)  NULL,
+        column_name             NVARCHAR(500)  NULL,
+        status                  NVARCHAR(20)   NULL,
+        failures                BIGINT         NULL,
+        execution_time_seconds  FLOAT          NULL,
+        compiled_sql            NVARCHAR(MAX)  NULL,
+        run_started_at          DATETIME2      NULL
+    );
+
+    -- An older dbt_test_log may predate compiled_sql (the cause of the
+    -- "Invalid column name 'compiled_sql'" on-run-end error). Add it if missing.
+    IF COL_LENGTH('dbo.dbt_test_log', 'compiled_sql') IS NULL
+        ALTER TABLE dbo.dbt_test_log ADD compiled_sql NVARCHAR(MAX) NULL;
     """
     with _db_lock:
         conn = _get_connection()
@@ -407,7 +440,13 @@ SOURCE_TABLES = [
     "pitch_type",
     "Zones",
     "school_type_lookup",
-    "player_game_stats"
+    "player_game_stats",
+    # Minor leagues, coaching staff and people (tested only if they have
+    # tests in sources.yml; otherwise dbt reports nothing to do).
+    "milb_teams",
+    "milb_players",
+    "team_coaches",
+    "people_details",
 ]
 
 
@@ -680,7 +719,7 @@ def run_draft_pipeline():
 
     run_dlt("draft")
 
-    _, dim_success = run_model("dim_drafts", allow_fail=True)
+    _, dim_success = run_model("dim_draft", allow_fail=True)
     if dim_success:
         run_model("fact_draft", allow_fail=True)
     else:
@@ -692,26 +731,38 @@ def run_draft_pipeline():
 # ----------------------------------------------------------
 # DLT INGEST (with pipeline logging + record counts)
 # ----------------------------------------------------------
-def run_dlt(resource: str, extra_args: str = ""):
+def run_dlt(resource: str, extra_args: str = "", table: str = None,
+            label: str = None, blocking: bool = True):
     """Run a dlt ingestion resource and log the result to the pipeline table.
 
-    Counts rows in dw.<resource> before and after ingestion so the pipeline
+    Counts rows in dw.<table> before and after ingestion so the pipeline
     summary shows how many records each ingest added.
+
+    table    -- the dw table the resource writes to, when it isn't named
+                after the resource (coaches -> team_coaches,
+                missing_teams -> milb_teams). Defaults to the resource name.
+    label    -- pipeline log name, for a resource run more than once with
+                different arguments (people_details --scope ...).
+    blocking -- True (default): a failure stops the pipeline, as before.
+                False: the failure is logged and the pipeline carries on.
+                Used for the supporting loads (minor leagues, coaches,
+                people), which nothing in the core build depends on.
     """
     layer = "ingest"
-    model_name = f"dlt_{resource}"
+    table = table or resource
+    model_name = f"dlt_{label or resource}"
     start_time = datetime.utcnow()
-    start_count = get_record_count(resource, schema=DLT_SCHEMA)
+    start_count = get_record_count(table, schema=DLT_SCHEMA)
 
     cmd = f'"{PYTHON_EXE}" "{MAIN_SCRIPT}" {resource} {extra_args}'
     print("dlt command:" + cmd)
 
     success, stderr = run_command(
-        cmd, f"dlt_{resource}", allow_fail=True, cwd=os.path.dirname(MAIN_SCRIPT)
+        cmd, model_name, allow_fail=True, cwd=os.path.dirname(MAIN_SCRIPT)
     )
 
     end_time = datetime.utcnow()
-    end_count = get_record_count(resource, schema=DLT_SCHEMA) if success else start_count
+    end_count = get_record_count(table, schema=DLT_SCHEMA) if success else start_count
 
     log_pipeline_event(
         model_name=model_name,
@@ -725,7 +776,9 @@ def run_dlt(resource: str, extra_args: str = ""):
     )
 
     if not success:
-        raise RuntimeError(f"{model_name} failed after retries")
+        if blocking:
+            raise RuntimeError(f"{model_name} failed after retries")
+        print(f" [{model_name}] failed -- non-blocking, continuing")
 
     return success, stderr
 
@@ -984,9 +1037,20 @@ def run_pipeline():
     run_dlt("play_events")
     run_dlt("player_transactions")
     run_dlt("umpires")
-    run_dlt("game_details")
     run_dlt("rosters")
-    
+
+    # Minor leagues, coaching staff and people. Current season by default
+    # (people_details only fetches ids it hasn't loaded yet). Non-blocking:
+    # a failure here is logged but doesn't stop the core build.
+    run_dlt("milb_teams", blocking=False)
+    run_dlt("milb_players", blocking=False)
+    run_dlt("coaches", table="team_coaches", blocking=False)
+    run_dlt("people_details", "--scope coaches", label="people_details_coaches", blocking=False)
+    run_dlt("people_details", "--scope awards", label="people_details_awards", blocking=False)
+    # Award-recipient teams still missing from dim_teams (uses the previous
+    # run's silver.dim_award_recipient / silver.dim_teams).
+    run_dlt("missing_teams", table="milb_teams", blocking=False)
+
     run_dbt_deps()
     #run_source_freshness()
     run_source_tests()

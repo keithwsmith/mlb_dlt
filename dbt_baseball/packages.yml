@@ -6,7 +6,7 @@ packages:
 - package: metaplane/dbt_expectations
   version: 0.10.10
 - package: brooklyn-data/dbt_artifacts
-  version: 2.11.1
+  version: 3.0.0
 - package: dbt-labs/audit_helper
   version: 0.14.0
 - package: infinitelambda/audit_helper_ext

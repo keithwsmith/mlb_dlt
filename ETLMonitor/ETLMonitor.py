@@ -689,6 +689,96 @@ def lineage_with_tests(model_name):
     return rows
 
 
+# ── TESTS FAILED ON LAST RUN ───────────────────────────────────────────────────
+# pipeline.py runs `dbt test` once per model (separate invocations), so there is
+# no single "last test run". Like the Pipeline tab's "latest run per model",
+# "last run" here means the most recent result of EACH test in dbo.dbt_test_log.
+# Unlike the Lineage + Tests view, this counts every test — model-level tests
+# (unique_combination_of_columns, unit tests) included, since it doesn't need
+# to match a column in dbo.model_lineage.
+
+_LATEST_TEST_RESULTS_CTE = """
+WITH latest AS (
+    SELECT
+        model_name,
+        CASE
+            WHEN CHARINDEX('.', model_name) > 0
+            THEN SUBSTRING(model_name, LEN(model_name) - CHARINDEX('.', REVERSE(model_name)) + 2, 200)
+            ELSE model_name
+        END                                   AS model_name_bare,
+        column_name,
+        test_name,
+        LOWER(status)                         AS status,
+        failures,
+        run_started_at,
+        ROW_NUMBER() OVER (
+            PARTITION BY model_name, test_name
+            ORDER BY run_started_at DESC
+        )                                     AS rn
+    FROM dbo.dbt_test_log
+)
+"""
+
+
+def test_failure_summary():
+    """
+    Totals for the 'Tests Failed' stat card, from the latest result of each test.
+      tests_failed  -- tests whose latest status is fail or error
+      tests_warned  -- tests whose latest status is warn (severity: warn with failing rows)
+      tests_total   -- distinct tests with at least one result
+      failing_rows  -- sum of failures across failed + warned tests
+      last_tested   -- most recent test run timestamp (shows if results are stale)
+    """
+    sql = _LATEST_TEST_RESULTS_CTE + """
+    SELECT
+        SUM(CASE WHEN status IN ('fail', 'error') THEN 1 ELSE 0 END)                    AS tests_failed,
+        SUM(CASE WHEN status = 'warn' THEN 1 ELSE 0 END)                                AS tests_warned,
+        COUNT(*)                                                                        AS tests_total,
+        SUM(CASE WHEN status IN ('fail', 'error', 'warn') THEN COALESCE(failures, 0) ELSE 0 END) AS failing_rows,
+        MAX(run_started_at)                                                             AS last_tested
+    FROM latest
+    WHERE rn = 1
+      AND model_name_bare NOT IN (SELECT model_name FROM dbo.retired_models)
+    """
+    rows = query(sql)
+    s = rows[0] if rows else {}
+    summary = {
+        'tests_failed': s.get('tests_failed') or 0,
+        'tests_warned': s.get('tests_warned') or 0,
+        'tests_total':  s.get('tests_total')  or 0,
+        'failing_rows': s.get('failing_rows') or 0,
+        'last_tested':  str(s['last_tested'])[:19] if s.get('last_tested') else None,
+    }
+    return summary
+
+
+def failed_tests_latest(limit=200):
+    """Each failing / erroring / warning test (latest result), worst first."""
+    sql = _LATEST_TEST_RESULTS_CTE + f"""
+    SELECT TOP {limit}
+        model_name_bare AS model_name,
+        column_name,
+        test_name,
+        status,
+        failures,
+        run_started_at
+    FROM latest
+    WHERE rn = 1
+      AND status IN ('fail', 'error', 'warn')
+      AND model_name_bare NOT IN (SELECT model_name FROM dbo.retired_models)
+    ORDER BY
+        CASE status WHEN 'error' THEN 0 WHEN 'fail' THEN 1 ELSE 2 END,
+        COALESCE(failures, 0) DESC,
+        model_name_bare,
+        test_name
+    """
+    rows = query(sql)
+    for r in rows:
+        if r.get('run_started_at'):
+            r['run_started_at'] = str(r['run_started_at'])[:19]
+    return rows
+
+
 def get_pipeline_ranges():
     return query(
         "SELECT * FROM dbo.pipeline_ranges "
@@ -1037,7 +1127,7 @@ TEMPLATE = r"""
 
   <!-- STAT CARDS -->
   <div class="row g-3 mb-4">
-    <div class="col-6 col-md-3">
+    <div class="col-6 col-md-4 col-xl-2">
       <div class="stat-card">
         <div class="text-muted" style="font-size:.8rem">TOTAL MODELS</div>
         <div class="stat-val text-white">{{ runs|length }}</div>
@@ -1046,7 +1136,7 @@ TEMPLATE = r"""
         </div>
       </div>
     </div>
-    <div class="col-6 col-md-3">
+    <div class="col-6 col-md-4 col-xl-2">
       <div class="stat-card">
         <div class="text-muted" style="font-size:.8rem">FAILURES</div>
         <div class="stat-val text-danger">{{ runs|selectattr('status_color','eq','danger')|list|length }}</div>
@@ -1055,7 +1145,7 @@ TEMPLATE = r"""
         </div>
       </div>
     </div>
-    <div class="col-6 col-md-3">
+    <div class="col-6 col-md-4 col-xl-2">
       <div class="stat-card">
         <div class="text-muted" style="font-size:.8rem">DATA WARNINGS</div>
         <div class="stat-val" style="color:#f59e0b">{{ runs|selectattr('status_color','eq','warning')|list|length }}</div>
@@ -1064,7 +1154,7 @@ TEMPLATE = r"""
         </div>
       </div>
     </div>
-    <div class="col-6 col-md-3">
+    <div class="col-6 col-md-4 col-xl-2">
       <div class="stat-card">
         <div class="text-muted" style="font-size:.8rem">PASSING</div>
         <div class="stat-val text-success">{{ runs|selectattr('status_color','eq','success')|list|length }}</div>
@@ -1073,7 +1163,21 @@ TEMPLATE = r"""
         </div>
       </div>
     </div>
-    <div class="col-6 col-md-3">
+    <div class="col-6 col-md-4 col-xl-2">
+      <div class="stat-card" style="cursor:pointer" onclick="showFailedTests()" title="Click to see the failing tests">
+        <div class="text-muted" style="font-size:.8rem">TESTS FAILED</div>
+        <div class="stat-val {{ 'text-danger' if test_summary.tests_failed else 'text-success' }}">{{ test_summary.tests_failed }}</div>
+        <div style="font-size:.8rem;color:#9aa0b4;margin-top:4px">
+          <i class="bi bi-clipboard-x me-1"></i>Latest result per test
+          · {{ '{:,}'.format(test_summary.failing_rows) }} failing rows
+          {% if test_summary.tests_warned %}· <span style="color:#f59e0b">{{ test_summary.tests_warned }} warn</span>{% endif %}
+        </div>
+        <div style="font-size:.72rem;color:#6b7280;margin-top:2px">
+          {{ test_summary.tests_total }} tests · last tested {{ test_summary.last_tested or '—' }}
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-4 col-xl-2">
       <div class="stat-card" style="cursor:pointer" onclick="showAiInsights()" title="Click to see full details">
         <div class="text-muted" style="font-size:.8rem">AI INSIGHTS</div>
         <div class="stat-val" style="color:#06b6d4">{{ (runs|selectattr('ai_warnings')|list|length) + (runs|selectattr('status_color','eq','info')|list|length) }}</div>
@@ -1125,6 +1229,55 @@ TEMPLATE = r"""
 
     <!-- ── PIPELINE STATUS ── -->
     <div class="tab-pane fade show active" id="tab-pipeline">
+
+      <!-- FAILED TESTS DETAIL PANEL — opened by the "Tests Failed" stat card -->
+      {% if failed_tests %}
+      <div class="card mb-3" id="failedTestsPanel">
+        <div class="card-header d-flex justify-content-between align-items-center" style="cursor:pointer"
+             data-bs-toggle="collapse" data-bs-target="#failedTestsBody">
+          <span><i class="bi bi-clipboard-x me-2"></i>Tests Failed on Last Run</span>
+          <span class="text-muted" style="font-size:.8rem">
+            {{ test_summary.tests_failed }} failed · {{ test_summary.tests_warned }} warn
+            · {{ '{:,}'.format(test_summary.failing_rows) }} failing rows
+            <i class="bi bi-chevron-down ms-2"></i>
+          </span>
+        </div>
+        <div class="collapse" id="failedTestsBody">
+          <div class="card-body p-0">
+            <div class="table-responsive" style="max-height:360px; overflow-y:auto">
+            <table class="table table-sm mb-0">
+              <thead><tr>
+                <th style="width:9%">Status</th><th style="width:16%">Model</th>
+                <th style="width:13%">Column</th><th>Test</th>
+                <th class="text-center" style="width:9%">Failures</th>
+                <th style="width:14%">Last Tested</th>
+              </tr></thead>
+              <tbody>
+              {% for t in failed_tests %}
+                <tr style="{{ 'background:rgba(239,68,68,.08)' if t.status in ('fail','error') else 'background:rgba(245,158,11,.06)' }}">
+                  <td>
+                    {% if t.status == 'error' %}
+                      <span class="badge bg-danger"><i class="bi bi-bug me-1"></i>ERROR</span>
+                    {% elif t.status == 'fail' %}
+                      <span class="badge bg-danger"><i class="bi bi-x-circle me-1"></i>FAIL</span>
+                    {% else %}
+                      <span class="badge" style="background:#f59e0b;color:#000"><i class="bi bi-exclamation-triangle me-1"></i>WARN</span>
+                    {% endif %}
+                  </td>
+                  <td><strong>{{ t.model_name }}</strong></td>
+                  <td><small class="text-muted">{{ t.column_name or '(model-level)' }}</small></td>
+                  <td style="font-family:monospace;font-size:.78rem">{{ t.test_name }}</td>
+                  <td class="text-center">{{ '{:,}'.format(t.failures) if t.failures is not none else '—' }}</td>
+                  <td><small class="text-muted">{{ t.run_started_at or '—' }}</small></td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endif %}
 
       <!-- AI INSIGHTS DETAIL PANEL — full text, no hovering required -->
       {% set ai_flagged   = runs|selectattr('ai_warnings')|list %}
@@ -2481,6 +2634,20 @@ function showAiInsights() {
   }, 150);
 }
 
+function showFailedTests() {
+  const pipelineTab = document.querySelector('[data-bs-target="#tab-pipeline"]');
+  if (pipelineTab) bootstrap.Tab.getOrCreateInstance(pipelineTab).show();
+  setTimeout(() => {
+    const panel = document.getElementById('failedTestsPanel');
+    if (!panel) { showToast('No failing tests on the last run'); return; }
+    const body = document.getElementById('failedTestsBody');
+    if (body && !body.classList.contains('show')) {
+      bootstrap.Collapse.getOrCreateInstance(body).show();
+    }
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 150);
+}
+
 function openRangeForModel(modelName) {
   const rangesTab = document.querySelector('[data-bs-target="#tab-ranges"]');
   if (rangesTab) bootstrap.Tab.getOrCreateInstance(rangesTab).show();
@@ -2655,6 +2822,8 @@ def index():
         range_audit_models = distinct_range_audit_models()
         alert_audit = alert_config_audit_log()
         transform_audit = transformation_audit_latest()
+        test_summary = test_failure_summary()
+        failed_tests = failed_tests_latest()
         health      = overall_health()
         alert_cfg   = get_alert_config()
         now         = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
@@ -2677,6 +2846,8 @@ def index():
         range_audit_models=range_audit_models,
         alert_audit=alert_audit,
         transform_audit=transform_audit,
+        test_summary=test_summary,
+        failed_tests=failed_tests,
         health=health,
         alert_cfg=alert_cfg,
         now=now,

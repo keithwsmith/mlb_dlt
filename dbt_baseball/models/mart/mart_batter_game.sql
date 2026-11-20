@@ -13,6 +13,21 @@
     total bases) and AVG / OBP / SLG for the game, from the pa_* flags in
     int_pitches_enriched. 0 / NULL for games loaded before mlb_load.py
     saved plate-appearance results.
+
+    FIX (NULL zone counts): the zone/chase flags in int_pitches_enriched are
+    NULL when a pitch has no tracking data, and SUM() returns NULL when every
+    value in the group is NULL. So any batter-game with no tracked pitches
+    got NULL chases, zone_swings and pitches_in_zone. Those counts now use
+    CASE ... = 1 THEN 1 ELSE 0, so they are 0, never NULL.
+
+    FIX (pitch counts): stg_play_events holds every play event, not just
+    pitches (pickoff throws, mound visits, substitutions, stolen bases...).
+    pitches_seen was count(*), which counted those too. It now counts
+    is_pitch = 1 only. Non-pitch rows are still read, because a plate
+    appearance can end on one (an automatic intentional walk has no pitch).
+
+    NEW: tracked_pitches = pitches with location data, so a 0 in the zone
+    counts can be told apart from "no tracking data".
 */
 
 with pitches as (
@@ -44,22 +59,25 @@ pitch_agg as (
         max(load_id)                                    as load_id,
         max(batter_side)                                as batter_side,
 
-        -- volume
-        count(*)                                        as pitches_seen,
+        -- volume (real pitches only, not pickoffs / mound visits / etc.)
+        sum(case when is_pitch = 1 then 1 else 0 end)   as pitches_seen,
+        sum(case when is_pitch = 1 and has_location = 1 then 1 else 0 end) as tracked_pitches,
         count(distinct at_bat_index)                    as plate_appearances,
 
         -- discipline
         sum(is_swing)                                   as swings,
         sum(is_whiff)                                   as whiffs,
-        sum(is_chase)                                   as chases,
-        sum(is_zone_swing)                              as zone_swings,
+        -- "= 1 THEN 1 ELSE 0" so untracked (NULL) pitches count as 0
+        -- instead of turning the whole sum NULL
+        sum(case when is_chase = 1 then 1 else 0 end)   as chases,
+        sum(case when is_zone_swing = 1 then 1 else 0 end) as zone_swings,
         sum(is_called_strike)                           as called_strikes_taken,
         sum(cast(is_ball as int))                       as balls_taken,
         sum(cast(is_foul as int))                       as fouls,
         sum(cast(is_in_play as int))                    as balls_in_play,
 
         -- zone awareness
-        sum(cast(is_in_strike_zone as int))             as pitches_in_zone,
+        sum(case when is_in_strike_zone = 1 then 1 else 0 end) as pitches_in_zone,
         -- FIX (edge case): is_in_strike_zone is NULL for untracked pitches,
         -- so count out-of-zone pitches explicitly rather than deriving them
         -- as pitches_seen - pitches_in_zone, which would fold untracked
@@ -96,6 +114,10 @@ pitch_agg as (
 
     from pitches
     group by game_pk, season, batter_id
+    -- drop "batter-games" made only of non-pitch events that saw no pitch
+    -- and completed no plate appearance
+    having sum(case when is_pitch = 1 then 1 else 0 end) > 0
+        or sum(pa_is_complete) > 0
 
 ),
 
@@ -145,7 +167,7 @@ select
     -- rates
     round(cast(p.swings as float) / nullif(p.pitches_seen, 0), 3)           as swing_pct,
     round(cast(p.whiffs as float) / nullif(p.swings, 0), 3)                 as whiff_pct,
-    round(cast(p.chases as float) / nullif(p.out_of_zone_pitches, 0), 3) as chase_pct,
+    round(cast(p.chases as float) / nullif(p.out_of_zone_pitches, 0), 3)    as chase_pct,
     round(cast(p.zone_swings as float) / nullif(p.pitches_in_zone, 0), 3)   as zone_swing_pct,
     round(cast(b.hard_hits as float) / nullif(b.batted_ball_events, 0), 3)  as hard_hit_pct,
     round(cast(b.barrels as float) / nullif(b.batted_ball_events, 0), 3)    as barrel_pct,

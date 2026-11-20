@@ -38,20 +38,94 @@
     values change on the first build. fact_player_stats re-resolves keys on
     every run, but anything that stored the old keys elsewhere will need a
     refresh.
+
+    MINOR LEAGUE PLAYERS (this revision):
+
+    4. Minor league players from stg_milb_players (dw.milb_players) are
+       stacked under the MLB rosters, so players who never reached a 40-man
+       roster are in the dimension too, and MLB players get versions for
+       their minor league seasons.
+
+    5. New column level: 'MLB' for stg_rosters rows, otherwise the level
+       from dw.milb_players ('AAA', 'AA', 'High-A', 'Single-A', 'Rookie').
+       level is part of change_hash, so a promotion or demotion starts a
+       new version.
+
+    6. One row per player per season is still kept. If a player appears at
+       more than one level in a season, MLB wins, then the highest minor
+       league level (lowest sport_id: 11 AAA ... 16 Rookie).
+
+    7. team_id stays the MLB organization for both sources (rosters.parent_team_id,
+       milb_players.parent_org_id), so it still joins to dim_teams. The
+       minor league club is in the new affiliate_team_id / affiliate_team_name.
+
+    8. A level change counts as an arrival, like a team change, and the
+       transaction lookup matches the club the player actually joined
+       (the affiliate for minor league rows, the MLB team otherwise).
+
+    Adding earlier minor league versions renumbers version_number for many
+    players, so player_version_key changes again on the first build.
 #}
 
 
--- 1. One roster record per player per season (latest load wins)
-with roster_deduped as (
+-- 0. MLB rosters and minor league players in one shape.
+--    level_rank: 1 = MLB, then the minor league sport_id (11 AAA ... 16 Rookie),
+--    so a lower number is a higher level.
+with roster_union as (
+    select
+        cast(player_id as bigint)                as player_id,
+        cast(full_name as nvarchar(255))         as full_name,
+        cast(team_id as bigint)                  as team_id,
+        cast(null as bigint)                     as affiliate_team_id,
+        cast(null as nvarchar(255))              as affiliate_team_name,
+        cast(jersey_number as nvarchar(20))      as jersey_number,
+        cast(position__code as nvarchar(20))     as position__code,
+        cast(position__name as nvarchar(100))    as position__name,
+        cast(position__type as nvarchar(100))    as position__type,
+        cast(position__abbreviation as nvarchar(20)) as position__abbreviation,
+        cast(status__code as nvarchar(20))       as status__code,
+        cast(status_description as nvarchar(255)) as status_description,
+        cast(season as int)                      as season,
+        cast('MLB' as nvarchar(20))              as level,
+        1                                        as level_rank,
+        cast(_dlt_load_id as nvarchar(64))       as _dlt_load_id
+    from {{ ref('stg_rosters') }}
+
+    union all
+
+    select
+        cast(player_id as bigint),
+        cast(full_name as nvarchar(255)),
+        cast(team_id as bigint),
+        cast(affiliate_team_id as bigint),
+        cast(affiliate_team_name as nvarchar(255)),
+        cast(jersey_number as nvarchar(20)),
+        cast(position__code as nvarchar(20)),
+        cast(position__name as nvarchar(100)),
+        cast(position__type as nvarchar(100)),
+        cast(position__abbreviation as nvarchar(20)),
+        cast(null as nvarchar(20)),              -- no roster status for minor leaguers
+        cast(null as nvarchar(255)),
+        cast(season as int),
+        cast(level as nvarchar(20)),
+        cast(sport_id as int),
+        cast(_dlt_load_id as nvarchar(64))
+    from {{ ref('stg_milb_players') }}
+),
+
+
+-- 1. One record per player per season: highest level wins (MLB first),
+--    then the latest load
+roster_deduped as (
     select *
     from (
         select
             *,
             row_number() over (
                 partition by player_id, season
-                order by _dlt_load_id desc
+                order by level_rank asc, _dlt_load_id desc
             ) as rn
-        from {{ ref('stg_rosters') }}
+        from roster_union
     ) r
     where rn = 1
 ),
@@ -63,6 +137,8 @@ roster_hashed as (
         player_id,
         full_name,
         team_id,
+        affiliate_team_id,
+        affiliate_team_name,
         jersey_number,
         position__code,
         position__name,
@@ -70,13 +146,15 @@ roster_hashed as (
         position__abbreviation,
         status__code,
         status_description,
-        cast(season as int) as season,
+        season,
+        level,
         _dlt_load_id,
         {{ dbt_utils.generate_surrogate_key([
             'team_id',
             'jersey_number',
             'position__code',
-            'status__code'
+            'status__code',
+            'level'
         ]) }} as change_hash
     from roster_deduped
 ),
@@ -88,7 +166,8 @@ with_prev as (
     select
         *,
         lag(change_hash) over (partition by player_id order by season, _dlt_load_id) as prev_change_hash,
-        lag(team_id)     over (partition by player_id order by season, _dlt_load_id) as prev_team_id
+        lag(team_id)     over (partition by player_id order by season, _dlt_load_id) as prev_team_id,
+        lag(level)       over (partition by player_id order by season, _dlt_load_id) as prev_level
     from roster_hashed
 ),
 
@@ -98,6 +177,7 @@ state_changes as (
         case
             when prev_change_hash is null                  then 1   -- first record
             when team_id is distinct from prev_team_id     then 1   -- team changed
+            when level   is distinct from prev_level       then 1   -- promoted / sent down
             else 0
         end as is_new_team_arrival
     from with_prev
@@ -120,7 +200,9 @@ versioned_base as (
         select top 1 cast(t.effective_date as date) as effective_date
         from {{ ref('stg_player_transactions') }} t
         where t.player_id  = sc.player_id
-          and t.to_team_id = sc.team_id
+          -- the club actually joined: the affiliate for minor league rows,
+          -- the MLB team otherwise
+          and t.to_team_id = coalesce(sc.affiliate_team_id, sc.team_id)
           and t.effective_date >= datefromparts(sc.season - 1, 10, 1)
           and t.effective_date <  datefromparts(sc.season + 1, 1, 1)
         order by t.effective_date desc
@@ -182,6 +264,9 @@ select
     player_id,
     full_name,
     team_id,
+    affiliate_team_id,
+    affiliate_team_name,
+    level,
     jersey_number,
     position__code,
     position__name,

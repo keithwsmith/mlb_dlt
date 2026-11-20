@@ -221,6 +221,7 @@ sources:
           Raw roster records loaded by the dlt pipeline (player-to-team
           assignments over time), referenced by dim_position and
           stg_rosters.
+          
 
       - name: school_type_lookup
         description: >
@@ -264,3 +265,9 @@ sources:
           a non-null innings-pitched or games-pitched value. Two-way players
           (e.g. a pitcher who also batted) can correctly appear in both this
           view and vw_batting_stats.
+          
+      - name: milb_players
+        description: Minor league players by level and season (mlb_load.py milb_players).
+     
+      - name: team_coaches
+        description: Coaching staffs, managers included (mlb_load.py coaches).
