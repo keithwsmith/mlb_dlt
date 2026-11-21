@@ -93,6 +93,9 @@ DBT_SCHEMA = "silver"
 # Schema where dlt raw tables land
 DLT_SCHEMA = "dw"
 
+# Schema where the gold models land (schema='gold' in each gold model)
+GOLD_SCHEMA = "gold"
+
 # ==========================================================
 # MODELS
 # ==========================================================
@@ -143,6 +146,10 @@ FACT_MODEL_DEPENDENCIES = {
     # complete by the time the mart stage starts.
     "int_team_game_results": [],
     "int_team_game_results_to_date": ["int_team_game_results"],
+    # Per-player, per-game box score. Listed in `intermediate` above but was
+    # never actually built by this script; the gold season models read it,
+    # so it is now built here (reads dim_games + dw.player_game_stats).
+    "int_player_game_stats": ["dim_games"],
     "dim_team_standings": ["int_team_game_results"],
     "fact_umpire_performance": [
         "dim_challenges",       # challenge outcomes rolled up per game
@@ -160,6 +167,40 @@ MART_DEPENDENCIES = {
     # guaranteed fully complete by the start of the mart stage -- see note
     # in FACT_MODEL_DEPENDENCIES above.
     "dim_team_standings_by_date": ["dim_team_standings"],
+}
+
+# Gold layer: business-ready tables in the gold schema, built after the
+# whole silver layer (dimensions, facts, marts) has run. Each model lists
+# the silver (or gold) models it reads; a gold model is skipped if any of
+# them failed or was skipped this run. Gold failures never stop the
+# pipeline. run_all_gold() resolves gold -> gold dependencies
+# (gold_league_season first, then the player season models).
+GOLD_DEPENDENCIES = {
+    "gold_league_season": [
+        "dim_games", "int_player_game_stats", "int_team_game_results",
+        "mart_batter_game", "mart_pitcher_game",
+    ],
+    "gold_team_season": [
+        "int_team_game_results", "dim_game_details", "dim_teams",
+    ],
+    "gold_player_season_batting": [
+        "dim_games", "int_player_game_stats", "int_team_game_results",
+        "mart_batter_game", "gold_league_season",
+    ],
+    "gold_player_season_pitching": [
+        "dim_games", "dim_game_details", "int_player_game_stats",
+        "int_team_game_results", "mart_pitcher_game", "gold_league_season",
+    ],
+    "gold_game_summary": [
+        "dim_games", "dim_game_details", "dim_teams", "dim_game_umpires",
+    ],
+    "gold_umpire_season": [
+        "dim_games", "dim_game_umpires", "fact_umpire_performance",
+        "mart_pitcher_game",
+    ],
+    # A view over dbo.pipeline and dbo.dbt_test_log (created by
+    # ensure_pipeline_table), so it has no model dependencies.
+    "gold_data_quality_summary": [],
 }
 
 # ==========================================================
@@ -396,7 +437,14 @@ def get_model_layer(model_name: str) -> str:
         return "mart"
     elif model_name.startswith("int_"):
         return "intermediate"
+    elif model_name.startswith("gold_"):
+        return "gold"
     return "other"
+
+
+def get_model_schema(model_name: str) -> str:
+    """Schema the model is built in, for record counts."""
+    return GOLD_SCHEMA if model_name.startswith("gold_") else DBT_SCHEMA
 
 
 # ==========================================================
@@ -492,8 +540,9 @@ def run_source_tests():
 def run_model(model: str, allow_fail: bool = False) -> Tuple[str, bool]:
     """Run and test a single model, logging results to the pipeline table."""
     layer = get_model_layer(model)
+    schema = get_model_schema(model)
     start_time = datetime.utcnow()
-    start_count = get_record_count(model)
+    start_count = get_record_count(model, schema=schema)
 
     extra = f"--select {model} --threads {DBT_THREADS}"
     if FULL_REFRESH:
@@ -506,7 +555,7 @@ def run_model(model: str, allow_fail: bool = False) -> Tuple[str, bool]:
     )
 
     end_time = datetime.utcnow()
-    end_count = get_record_count(model) if success else start_count
+    end_count = get_record_count(model, schema=schema) if success else start_count
 
     status = "SUCCESS" if success else "FAILURE"
     error_msg = stderr if not success else None
@@ -537,7 +586,7 @@ def skip_model(model: str, reason: str):
     """Log a skipped model to the pipeline table."""
     layer = get_model_layer(model)
     now = datetime.utcnow()
-    count = get_record_count(model)
+    count = get_record_count(model, schema=get_model_schema(model))
 
     log_pipeline_event(
         model_name=model,
@@ -667,6 +716,64 @@ def run_all_marts(all_completed: set):
         print(f"\n Mart failures (non-blocking): {failed}")
     if skipped:
         print(f" Mart skipped (unmet deps): {skipped}")
+
+    return completed
+
+
+# ----------------------------------------------------------
+# GOLD (dependency-aware, after the whole silver layer)
+# ----------------------------------------------------------
+def run_all_gold(silver_completed: set):
+    """Build the gold models once silver is done.
+
+    Same multi-round approach as run_all_facts(): each round runs every gold
+    model whose dependencies all completed (in silver, or earlier in this
+    stage), so gold_league_season runs before the player season models that
+    read it. A model whose dependencies failed or were skipped is logged as
+    SKIPPED. Gold is non-blocking: a failure is logged and the pipeline
+    carries on to tests, audits and docs.
+    """
+    print("\n================ GOLD ================")
+
+    completed = set()
+    failed = set()
+    skipped = set()
+    remaining = dict(GOLD_DEPENDENCIES)
+
+    while remaining:
+        ready = []
+        blocked = []
+
+        for model, deps in remaining.items():
+            missing = [d for d in deps if d not in silver_completed and d not in completed]
+            if not missing:
+                ready.append(model)
+            else:
+                blocked.append((model, missing))
+
+        if not ready:
+            for model, missing in blocked:
+                reason = f"Missing dependencies: {missing}"
+                print(f" [{model}] SKIPPED — {reason}")
+                skip_model(model, reason)
+                skipped.add(model)
+            break
+
+        # One at a time: gold models are small, and the per-model dbt test
+        # that follows each run reads the gold tables built before it.
+        for m in ready:
+            model, success = run_model(m, allow_fail=True)
+            del remaining[model]
+            if success:
+                completed.add(model)
+            else:
+                failed.add(model)
+                print(f" [{model}] failed — gold models that read it will be skipped")
+
+    if failed:
+        print(f"\n Gold failures (non-blocking): {failed}")
+    if skipped:
+        print(f" Gold skipped (unmet deps): {skipped}")
 
     return completed
 
@@ -907,9 +1014,11 @@ def print_pipeline_summary():
                 WHEN 'source_test'   THEN 1
                 WHEN 'dimension'     THEN 2
                 WHEN 'fact'          THEN 3
+                WHEN 'intermediate'  THEN 3
                 WHEN 'mart'          THEN 4
-                WHEN 'test_analysis' THEN 5
-                ELSE 6
+                WHEN 'gold'          THEN 5
+                WHEN 'test_analysis' THEN 6
+                ELSE 7
             END,
             model_name
     """
@@ -1059,9 +1168,13 @@ def run_pipeline():
     fact_completed = run_all_facts(dim_completed)
 
     all_completed = dim_completed | fact_completed
-    run_all_marts(all_completed)
+    mart_completed = run_all_marts(all_completed)
 
     run_draft_pipeline()
+
+    # Gold runs after the whole silver layer (dimensions, facts, marts).
+    silver_completed = all_completed | mart_completed
+    run_all_gold(silver_completed)
 
     run_all_tests()
     check_test_results()

@@ -1,0 +1,17 @@
+version: 2
+
+# Operations tables in dbo, read by gold_data_quality_summary.
+# They are written outside the dbt models: dbo.pipeline by pipeline.py,
+# dbo.dbt_test_log by the log_test_results on-run-end hook. Both must exist
+# before gold_data_quality_summary is built (SQL Server will not create a
+# view over a missing table).
+
+sources:
+  - name: ops
+    schema: dbo
+    description: Pipeline run and test logs used for monitoring (also read by ETL Monitor).
+    tables:
+      - name: pipeline
+        description: One row per model per pipeline run (status, row counts, elapsed time, error text).
+      - name: dbt_test_log
+        description: One row per dbt test per run (status, failing-row count, run time).

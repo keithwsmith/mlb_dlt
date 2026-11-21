@@ -32,6 +32,12 @@
     NEW: tracked_pitches = pitches with location data. zone_pct and edge_pct
     now divide by it instead of total_pitches, so untracked pitches no
     longer drag those rates down; both are NULL when nothing was tracked.
+
+    FIX (CSW%): csw_pct divided called strikes only. CSW% is "called
+    strikes plus whiffs", so it now uses (called_strikes + whiffs) /
+    total_pitches, which is typically about 0.27-0.30 for MLB pitchers. This
+    model is incremental: rebuild it with --full-refresh so rows loaded
+    before the fix are recalculated too.
 */
 with pitches as (
     select * from {{ ref('int_pitches_enriched') }}
@@ -120,7 +126,8 @@ select
     round(cast(contact as float) / nullif(swings, 0), 3)               as contact_pct,
     round(cast(first_pitch_strikes as float) / nullif(first_pitches, 0), 3) as first_pitch_strike_pct,
     round(cast(swings as float) / nullif(total_pitches, 0), 3)         as swing_pct,
-    round(cast(called_strikes as float) / nullif(total_pitches, 0), 3) as csw_pct,
+    -- CSW% = called strikes + whiffs (swinging strikes), per pitch
+    round(cast(called_strikes + whiffs as float) / nullif(total_pitches, 0), 3) as csw_pct,
     round(cast(edge_pitches as float) / nullif(tracked_pitches, 0), 3) as edge_pct,
     -- outcome rates
     round(cast(strikeouts as float) / nullif(batters_faced, 0), 3)      as strikeout_pct,

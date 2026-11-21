@@ -1,0 +1,717 @@
+version: 2
+
+# ============================================================
+# GOLD LAYER
+# ============================================================
+# Business-ready tables in the gold schema, built only from silver models
+# (and the dbo operations logs for gold_data_quality_summary).
+#
+#   gold_team_season            one row per team per regular season
+#   gold_player_season_batting  one row per player per regular season
+#   gold_player_season_pitching one row per pitcher per regular season
+#   gold_league_season          one row per regular season (league context)
+#   gold_game_summary           one row per final game
+#   gold_umpire_season          one row per home-plate umpire per season
+#   gold_data_quality_summary   one row per model: is it fit to use? (view)
+#
+# Tests use dbt_utils (unique_combination_of_columns, accepted_range,
+# expression_is_true). Cross-model reconciliation tests live in
+# tests/gold/.
+
+models:
+
+  # ============================================================
+  # gold_team_season
+  # ============================================================
+  - name: gold_team_season
+    description: >
+      One row per team per regular season: record, run differential,
+      Pythagorean expected record, division rank and games back, home/away,
+      one-run, interleague and day/night splits, and home attendance.
+      Built from int_team_game_results.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [season, team_id]
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "games = wins + losses + ties"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "home_wins + away_wins = wins"
+    columns:
+      - name: season
+        description: Season year.
+        tests: [not_null]
+      - name: team_id
+        description: MLB team id.
+        tests: [not_null]
+      - name: team_name
+        description: Team name.
+      - name: abbreviation
+        description: Team abbreviation for that season (from dim_teams).
+      - name: league_name
+        description: League for that season.
+        tests: [not_null]
+      - name: division_name
+        description: Division for that season.
+      - name: games
+        description: Regular-season games played (final games only).
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                max_value: 165
+      - name: wins
+        description: Wins.
+      - name: losses
+        description: Losses.
+      - name: ties
+        description: Ties.
+      - name: win_pct
+        description: wins / (wins + losses), 3 decimals.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: division_rank
+        description: Rank in the division by win_pct (1 = first; ties share a rank).
+      - name: games_back
+        description: Games behind the division leader, ((leader W - W) + (L - leader L)) / 2.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: runs_scored
+        description: Total runs scored.
+      - name: runs_allowed
+        description: Total runs allowed.
+      - name: run_differential
+        description: runs_scored - runs_allowed.
+      - name: runs_per_game
+        description: Runs scored per game.
+      - name: runs_allowed_per_game
+        description: Runs allowed per game.
+      - name: pythag_win_pct
+        description: Expected win % from runs, RS^1.83 / (RS^1.83 + RA^1.83).
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: pythag_wins
+        description: Expected wins = pythag_win_pct x decisions, rounded.
+      - name: luck
+        description: wins - pythag_wins. Large values usually reflect one-run games, not bad data.
+      - name: home_wins
+        description: Home wins.
+      - name: home_losses
+        description: Home losses.
+      - name: away_wins
+        description: Road wins.
+      - name: away_losses
+        description: Road losses.
+      - name: one_run_wins
+        description: Wins by exactly one run.
+      - name: one_run_losses
+        description: Losses by exactly one run.
+      - name: interleague_wins
+        description: Wins against the other league.
+      - name: interleague_losses
+        description: Losses against the other league.
+      - name: day_wins
+        description: Day-game wins.
+      - name: day_losses
+        description: Day-game losses.
+      - name: night_wins
+        description: Night-game wins.
+      - name: night_losses
+        description: Night-game losses.
+      - name: shutouts_thrown
+        description: Games in which the opponent scored 0.
+      - name: home_attendance
+        description: Total home attendance (games with attendance > 0).
+      - name: avg_home_attendance
+        description: Average home attendance per game with attendance > 0.
+      - name: last_game_date
+        description: Date of the team's latest game in the season (shows how current the row is).
+
+  # ============================================================
+  # gold_player_season_batting
+  # ============================================================
+  - name: gold_player_season_batting
+    description: >
+      One row per player per regular season: the full batting line (box
+      score from int_player_game_stats; HBP, SF, plate discipline and contact
+      quality from mart_batter_game). All rates recomputed from season counts.
+      ops_plus compares with gold_league_season and is not park-adjusted.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [season, player_id]
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "hits <= at_bats"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "plate_appearances >= at_bats"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "doubles + triples + home_runs <= hits"
+    columns:
+      - name: season
+        description: Season year.
+        tests: [not_null]
+      - name: player_id
+        description: MLB player id.
+        tests: [not_null]
+      - name: player_name
+        description: Player name.
+      - name: last_team_id
+        description: Team the player finished the season with.
+      - name: last_team_name
+        description: Name of last_team_id.
+      - name: teams_played_for
+        description: Number of teams the player batted for this season (> 1 = traded).
+      - name: games
+        description: Games with an at-bat, walk or run scored.
+      - name: plate_appearances
+        description: AB + BB + HBP + SF.
+      - name: at_bats
+        description: At-bats.
+      - name: runs
+        description: Runs scored.
+      - name: hits
+        description: Hits.
+      - name: singles
+        description: Hits - 2B - 3B - HR.
+      - name: doubles
+        description: Doubles.
+      - name: triples
+        description: Triples.
+      - name: home_runs
+        description: Home runs.
+      - name: rbi
+        description: Runs batted in.
+      - name: walks
+        description: Walks.
+      - name: strikeouts
+        description: Strikeouts.
+      - name: hit_by_pitch
+        description: Hit by pitch (pitch data; 0 in games without plate-appearance results).
+      - name: sac_flies
+        description: Sacrifice flies (pitch data; 0 in games without plate-appearance results).
+      - name: stolen_bases
+        description: Stolen bases.
+      - name: total_bases
+        description: H + 2B + 2x3B + 3xHR.
+      - name: left_on_base
+        description: Runners left on base.
+      - name: batting_avg
+        description: H / AB.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: on_base_pct
+        description: (H + BB + HBP) / (AB + BB + HBP + SF).
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: slugging_pct
+        description: TB / AB.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 4
+      - name: ops
+        description: OBP + SLG.
+      - name: isolated_power
+        description: SLG - AVG.
+      - name: babip
+        description: (H - HR) / (AB - SO - HR + SF).
+      - name: strikeout_pct
+        description: SO / PA.
+      - name: walk_pct
+        description: BB / PA.
+      - name: ops_plus
+        description: 100 x (OBP / league OBP + SLG / league SLG - 1). Not park-adjusted; 100 = league average.
+      - name: tracked_games
+        description: Games with pitch-tracking data (coverage for the columns below).
+      - name: pitches_seen
+        description: Pitches seen.
+      - name: swing_pct
+        description: Swings / pitches seen.
+      - name: whiff_pct
+        description: Whiffs / swings.
+      - name: chase_pct
+        description: Swings at pitches outside the zone / pitches outside the zone.
+      - name: zone_swing_pct
+        description: Swings at pitches in the zone / pitches in the zone.
+      - name: batted_ball_events
+        description: Balls in play with tracking data.
+      - name: avg_exit_velo
+        description: Average exit velocity (mph), weighted by batted balls per game.
+      - name: max_exit_velo
+        description: Hardest-hit ball of the season (mph).
+      - name: avg_launch_angle
+        description: Average launch angle (degrees), weighted by batted balls per game.
+      - name: hard_hit_pct
+        description: Hard-hit balls / batted ball events.
+      - name: barrel_pct
+        description: Barrels / batted ball events.
+      - name: gb_pct
+        description: Ground balls / batted ball events.
+      - name: ld_pct
+        description: Line drives / batted ball events.
+      - name: fb_pct
+        description: Fly balls / batted ball events.
+      - name: team_games
+        description: Games played by last_team_id this season.
+      - name: is_qualified
+        description: 1 if PA >= 3.1 x team_games (batting-title qualified).
+        tests:
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+  # ============================================================
+  # gold_player_season_pitching
+  # ============================================================
+  - name: gold_player_season_pitching
+    description: >
+      One row per pitcher per regular season: W-L-SV, innings, ERA, WHIP,
+      K/9, BB/9, FIP, and pitch metrics (velocity, CSW%, whiff%, chase%).
+      Box score from int_player_game_stats, decisions from dim_game_details,
+      pitch metrics from mart_pitcher_game. All rates from season counts.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [season, player_id]
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "earned_runs <= runs_allowed"
+    columns:
+      - name: season
+        description: Season year.
+        tests: [not_null]
+      - name: player_id
+        description: MLB player id.
+        tests: [not_null]
+      - name: player_name
+        description: Pitcher name.
+      - name: pitcher_hand
+        description: Throwing hand (pitch data).
+      - name: last_team_id
+        description: Team the pitcher finished the season with.
+      - name: last_team_name
+        description: Name of last_team_id.
+      - name: teams_played_for
+        description: Number of teams the pitcher appeared for this season.
+      - name: games
+        description: Games pitched.
+      - name: wins
+        description: Wins (pitcher of record).
+      - name: losses
+        description: Losses (pitcher of record).
+      - name: saves
+        description: Saves.
+      - name: outs_recorded
+        description: Outs recorded.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: innings_pitched
+        description: Innings in baseball notation (6.2 = 6 and 2/3).
+      - name: innings_decimal
+        description: Innings as a number (outs / 3).
+      - name: hits_allowed
+        description: Hits allowed.
+      - name: runs_allowed
+        description: Runs allowed.
+      - name: earned_runs
+        description: Earned runs allowed.
+      - name: walks
+        description: Walks allowed.
+      - name: strikeouts
+        description: Strikeouts.
+      - name: home_runs_allowed
+        description: Home runs allowed.
+      - name: hit_batters
+        description: Batters hit by a pitch (pitch data).
+      - name: era
+        description: 9 x ER / IP.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: whip
+        description: (BB + H) / IP.
+      - name: strikeouts_per_9
+        description: 9 x SO / IP.
+      - name: walks_per_9
+        description: 9 x BB / IP.
+      - name: home_runs_per_9
+        description: 9 x HR / IP.
+      - name: strikeout_to_walk
+        description: SO / BB.
+      - name: fip
+        description: (13 x HR + 3 x (BB + HBP) - 2 x SO) / IP + league FIP constant.
+      - name: tracked_games
+        description: Games with pitch-tracking data (coverage for the columns below).
+      - name: batters_faced
+        description: Batters faced (pitch data).
+      - name: strikeout_pct
+        description: Strikeouts / batters faced (pitch data).
+      - name: walk_pct
+        description: Walks / batters faced (pitch data).
+      - name: total_pitches
+        description: Pitches thrown.
+      - name: pitches_per_inning
+        description: Pitches / IP.
+      - name: strike_pct
+        description: Strikes / pitches.
+      - name: csw_pct
+        description: (Called strikes + whiffs) / pitches -- standard CSW%.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: whiff_pct
+        description: Whiffs / swings.
+      - name: chase_pct
+        description: Swings at pitches outside the zone / pitches outside the zone.
+      - name: zone_pct
+        description: Pitches in the zone / tracked pitches.
+      - name: first_pitch_strike_pct
+        description: First-pitch strikes / first pitches.
+      - name: avg_velo
+        description: Average velocity (mph), weighted by tracked pitches per game.
+      - name: max_velo
+        description: Fastest pitch of the season (mph).
+      - name: avg_spin_rate
+        description: Average spin rate (rpm), weighted by tracked pitches per game.
+      - name: team_games
+        description: Games played by last_team_id this season.
+      - name: is_qualified
+        description: 1 if outs >= 3 x team_games (ERA-title qualified).
+        tests:
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+  # ============================================================
+  # gold_league_season
+  # ============================================================
+  - name: gold_league_season
+    description: >
+      One row per regular season: MLB-wide averages and the FIP constant.
+      Uses the same sources and rules as the player models, so it equals the
+      sum of the player lines (see tests/gold/).
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [season]
+    columns:
+      - name: season
+        description: Season year.
+        tests: [not_null]
+      - name: games
+        description: Distinct games played.
+      - name: team_games
+        description: Team-games (2 per game).
+      - name: runs
+        description: Total runs scored.
+      - name: runs_per_team_game
+        description: Runs per team per game.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 2
+                max_value: 7
+              config:
+                severity: warn
+      - name: home_runs_per_team_game
+        description: Home runs per team per game.
+      - name: batting_avg
+        description: League batting average.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0.2
+                max_value: 0.3
+              config:
+                severity: warn
+      - name: on_base_pct
+        description: League OBP.
+      - name: slugging_pct
+        description: League SLG.
+      - name: ops
+        description: League OPS.
+      - name: strikeout_pct
+        description: Strikeouts / plate appearances.
+      - name: walk_pct
+        description: Walks / plate appearances.
+      - name: era
+        description: League ERA.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 2.5
+                max_value: 6
+              config:
+                severity: warn
+      - name: whip
+        description: League WHIP.
+      - name: fip_constant
+        description: league ERA - (13 x HR + 3 x (BB + HBP) - 2 x SO) / IP; added to every pitcher's FIP.
+      - name: at_bats
+        description: League at-bats.
+      - name: hits
+        description: League hits.
+      - name: home_runs
+        description: League home runs.
+      - name: walks
+        description: League walks.
+      - name: strikeouts
+        description: League strikeouts.
+      - name: outs_recorded
+        description: League outs recorded by pitchers.
+      - name: earned_runs
+        description: League earned runs.
+
+  # ============================================================
+  # gold_game_summary
+  # ============================================================
+  - name: gold_game_summary
+    description: >
+      One row per final game (all game types): teams, score, winner, pitchers
+      of record, venue, attendance, length, weather and home-plate umpire.
+      Ready for a dashboard or MLB Explorer without further joins.
+    columns:
+      - name: game_pk
+        description: MLB game id.
+        tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_games')
+                field: game_pk
+      - name: season
+        description: Season year.
+        tests: [not_null]
+      - name: game_type
+        description: Game type code (R = regular season).
+      - name: game_type_desc
+        description: Game type description.
+      - name: game_date
+        description: Game date.
+        tests: [not_null]
+      - name: game_datetime
+        description: Scheduled start.
+      - name: day_night
+        description: day or night.
+      - name: double_header
+        description: Doubleheader flag from the schedule.
+      - name: game_number
+        description: Game number within a doubleheader.
+      - name: series_description
+        description: Series description.
+      - name: series_game_number
+        description: Game number within the series.
+      - name: games_in_series
+        description: Games in the series.
+      - name: away_team_id
+        description: Away team id.
+      - name: away_team_name
+        description: Away team name.
+      - name: away_abbreviation
+        description: Away team abbreviation (dim_teams, same season).
+      - name: away_league_name
+        description: Away team league.
+      - name: home_team_id
+        description: Home team id.
+      - name: home_team_name
+        description: Home team name.
+      - name: home_abbreviation
+        description: Home team abbreviation (dim_teams, same season).
+      - name: home_league_name
+        description: Home team league.
+      - name: away_score
+        description: Away runs.
+        tests: [not_null]
+      - name: home_score
+        description: Home runs.
+        tests: [not_null]
+      - name: away_hits
+        description: Away hits.
+      - name: home_hits
+        description: Home hits.
+      - name: winning_team_name
+        description: Winner (NULL for a tie).
+      - name: losing_team_name
+        description: Loser (NULL for a tie).
+      - name: score_line
+        description: Readable score, e.g. "NYY 5 @ BOS 3".
+      - name: run_margin
+        description: Absolute run difference.
+      - name: is_one_run_game
+        description: 1 if decided by one run.
+      - name: is_shutout
+        description: 1 if a team scored 0.
+      - name: is_tie
+        description: Tie flag from dim_games.
+      - name: winning_pitcher_id
+        description: Winning pitcher id.
+      - name: winning_pitcher_name
+        description: Winning pitcher.
+      - name: losing_pitcher_id
+        description: Losing pitcher id.
+      - name: losing_pitcher_name
+        description: Losing pitcher.
+      - name: save_pitcher_id
+        description: Save pitcher id.
+      - name: save_pitcher_name
+        description: Save pitcher.
+      - name: venue_id
+        description: Venue id.
+      - name: venue_name
+        description: Venue name.
+      - name: attendance
+        description: Attendance.
+      - name: game_duration_minutes
+        description: Game length in minutes.
+      - name: weather_condition
+        description: Weather condition.
+      - name: weather_temp
+        description: Temperature.
+      - name: weather_wind
+        description: Wind.
+      - name: home_plate_umpire
+        description: Home-plate umpire.
+
+  # ============================================================
+  # gold_umpire_season
+  # ============================================================
+  - name: gold_umpire_season
+    description: >
+      One row per home-plate umpire per regular season: games, called strikes
+      outside the zone, missed calls (and which side they favoured), and
+      replay challenge results. Rates from season totals.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [season, official_id]
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "overturned_challenges + upheld_challenges = challenges"
+    columns:
+      - name: season
+        description: Season year.
+        tests: [not_null]
+      - name: official_id
+        description: Umpire id.
+        tests: [not_null]
+      - name: umpire_name
+        description: Umpire name.
+        tests: [not_null]
+      - name: games_behind_plate
+        description: Regular-season games as home-plate umpire.
+      - name: tracked_games
+        description: Of those, games with pitch-tracking data.
+      - name: called_strikes_outside_zone
+        description: Called strikes on pitches outside the zone.
+      - name: called_strikes_outside_zone_per_game
+        description: called_strikes_outside_zone / games_behind_plate.
+      - name: tracked_pitches
+        description: Tracked pitches in the umpire's games.
+      - name: missed_calls_favor_pitcher
+        description: Missed calls that helped the pitcher.
+      - name: missed_calls_favor_batter
+        description: Missed calls that helped the batter.
+      - name: missed_calls
+        description: Total missed calls.
+      - name: missed_call_rate
+        description: missed_calls / tracked_pitches.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: net_favor_pitcher
+        description: Favor-pitcher minus favor-batter missed calls (positive = pitcher-friendly).
+      - name: challenges
+        description: Replay challenges in the umpire's games.
+      - name: overturned_challenges
+        description: Challenges overturned.
+      - name: upheld_challenges
+        description: Challenges upheld.
+      - name: overturn_rate
+        description: overturned_challenges / challenges.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+
+  # ============================================================
+  # gold_data_quality_summary
+  # ============================================================
+  - name: gold_data_quality_summary
+    description: >
+      One row per model: latest pipeline run (dbo.pipeline), the latest result
+      of every test (dbo.dbt_test_log), and a red / amber / green health flag.
+      A view, so it always reflects the latest run.
+    columns:
+      - name: model_name
+        description: Model name without the package prefix.
+        tests:
+          - unique
+          - not_null
+      - name: model_layer
+        description: Layer from dbo.pipeline (Stage, Dimension, ...).
+      - name: last_run_status
+        description: Status of the latest pipeline run.
+      - name: last_run_at
+        description: Start time of the latest pipeline run.
+      - name: start_record_count
+        description: Rows before the latest run.
+      - name: end_record_count
+        description: Rows after the latest run.
+      - name: records_added
+        description: Rows added by the latest run.
+      - name: elapsed_seconds
+        description: Duration of the latest run.
+      - name: error_message
+        description: Error text from the latest run, if any.
+      - name: runs_last_7_days
+        description: Pipeline runs in the last 7 days.
+      - name: failed_runs_last_7_days
+        description: Failed pipeline runs in the last 7 days.
+      - name: tests_total
+        description: Distinct tests with a result.
+      - name: tests_passed
+        description: Tests whose latest result is pass.
+      - name: tests_failed
+        description: Tests whose latest result is fail or error.
+      - name: tests_warned
+        description: Tests whose latest result is warn.
+      - name: failing_rows
+        description: Failing rows across failed and warned tests.
+      - name: last_tested_at
+        description: Latest test run for this model.
+      - name: health
+        description: red / amber / green (see the model's header comment).
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['red', 'amber', 'green']
