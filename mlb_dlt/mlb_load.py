@@ -515,14 +515,26 @@ VENUE_BATCH_SIZE = 100
 def get_venue_ids_from_dw() -> list:
     """
     Every venue id referenced anywhere in dw: games played there, plus each
-    team's home and spring-training park. Loading exactly these ids
+    team's home and spring-training park -- MLB teams (dw.teams) AND minor
+    league, international and winter league clubs (dw.milb_teams, which also
+    holds the teams missing_teams adds). Loading exactly these ids
     guarantees every venue_id in dim_games and dim_teams has a dim_venue row.
-    A query that fails (e.g. a table not loaded yet) is skipped, not fatal.
+
+    silver.dim_teams is read too, so any venue the dbt model ends up with is
+    covered even if it came from somewhere not listed here. Run dbt (or at
+    least dim_teams) before this if dim_teams has changed since the last run.
+
+    A query that fails (e.g. a table not loaded yet, or dw.milb_teams having
+    no spring_venue__id column) is skipped, not fatal.
     """
     queries = [
         "SELECT DISTINCT venue__id FROM dw.games WHERE venue__id IS NOT NULL",
         "SELECT DISTINCT venue__id FROM dw.teams WHERE venue__id IS NOT NULL",
         "SELECT DISTINCT spring_venue__id FROM dw.teams WHERE spring_venue__id IS NOT NULL",
+        "SELECT DISTINCT venue__id FROM dw.milb_teams WHERE venue__id IS NOT NULL",
+        "SELECT DISTINCT spring_venue__id FROM dw.milb_teams WHERE spring_venue__id IS NOT NULL",
+        "SELECT DISTINCT venue_id FROM silver.dim_teams WHERE venue_id IS NOT NULL",
+        "SELECT DISTINCT spring_venue_id FROM silver.dim_teams WHERE spring_venue_id IS NOT NULL",
     ]
     ids = set()
     try:
@@ -535,7 +547,11 @@ def get_venue_ids_from_dw() -> list:
         for sql in queries:
             try:
                 cursor.execute(sql)
-                ids.update(int(row[0]) for row in cursor.fetchall() if row[0] is not None)
+                found = {int(row[0]) for row in cursor.fetchall() if row[0] is not None}
+                # 0 is not a real venue (e.g. dim_teams' Unknown member).
+                found.discard(0)
+                ids |= found
+                print(f"[venues] {len(found):>5} ids from: {sql}")
             except pyodbc.Error as e:
                 print(f"[venues] skipped ({e.args[0] if e.args else e}): {sql}")
     finally:
@@ -553,8 +569,10 @@ def venues_resource(start_year: int = None, end_year: int = None, venue_ids: lis
       - --venue-ids given:        just those ids.
       - --start-year/--end-year:  every venue the API lists for MLB (sportId 1)
                                   in each season of the range.
-      - neither (default):        every venue id used in dw.games or dw.teams.
-                                  Load games for the seasons you want first.
+      - neither (default):        every venue id used in dw.games, dw.teams,
+                                  dw.milb_teams or silver.dim_teams (see
+                                  get_venue_ids_from_dw). Load games, teams and
+                                  milb_teams for the seasons you want first.
 
     Each row keeps the API's nested objects, which dlt flattens into columns
     such as location__city, location__state_abbrev, location__country,
@@ -1227,6 +1245,50 @@ PEOPLE_DETAIL_COLUMNS = {
 
 PEOPLE_BATCH_SIZE = 50   # person ids per /people call
 
+# Every place a person id appears in dw, used by --scope missing. Each query
+# runs on its own: a table that doesn't exist yet, or a column named
+# differently, is skipped and reported rather than stopping the load.
+PERSON_ID_SOURCES = [
+    "SELECT DISTINCT person_id FROM dw.team_coaches",
+    "SELECT DISTINCT player_id FROM dw.player_transactions",
+    "SELECT DISTINCT id FROM dw.mlbplayers",
+    "SELECT DISTINCT player_id FROM dw.award_recipients",
+    "SELECT DISTINCT id FROM dw.milb_players",
+    "SELECT DISTINCT person__id FROM dw.rosters",
+    "SELECT DISTINCT player__id FROM dw.player_stats",
+    "SELECT DISTINCT player_id FROM dw.player_game_stats",
+    "SELECT DISTINCT batter_id FROM dw.play_events",
+    "SELECT DISTINCT pitcher_id FROM dw.play_events",
+    "SELECT DISTINCT official_id FROM dw.umpires",
+    "SELECT DISTINCT winning_pitcher_id FROM dw.game_details",
+    "SELECT DISTINCT losing_pitcher_id FROM dw.game_details",
+    "SELECT DISTINCT save_pitcher_id FROM dw.game_details",
+    "SELECT DISTINCT person__id FROM dw.draft",
+]
+
+
+def get_all_referenced_person_ids(cursor) -> set:
+    """Every person id (> 0) referenced in any PERSON_ID_SOURCES query."""
+    ids = set()
+    for sql in PERSON_ID_SOURCES:
+        try:
+            cursor.execute(sql)
+            found = set()
+            for r in cursor.fetchall():
+                if r[0] is None:
+                    continue
+                try:
+                    pid = int(r[0])
+                except (TypeError, ValueError):
+                    continue
+                if pid > 0:
+                    found.add(pid)
+            ids |= found
+            print(f"[people_details] {len(found):>7} ids from: {sql}")
+        except pyodbc.Error as e:
+            print(f"[people_details] skipped ({e.args[0] if e.args else e}): {sql}")
+    return ids
+
 
 def get_person_ids_needing_details(scope: str = "coaches", refresh: bool = False) -> list:
     """
@@ -1237,8 +1299,37 @@ def get_person_ids_needing_details(scope: str = "coaches", refresh: bool = False
                         executives, broadcasters, celebrities and independent /
                         winter league players who are in no roster or staff table,
                         so dim_person can include them
+    scope = "missing" : every person id referenced ANYWHERE in dw (see
+                        PERSON_ID_SOURCES): pitch data, box scores, rosters,
+                        umpires, game decisions, minor leaguers, draft picks,
+                        plus everything the other scopes cover. Run it after
+                        the other loads to fill every gap in dw.people_details.
     Ids already in dw.people_details are skipped unless refresh=True.
     """
+    conn = pyodbc.connect(DW_CONNECTION_STRING, timeout=10)
+    cursor = conn.cursor()
+
+    if scope == "missing":
+        ids = get_all_referenced_person_ids(cursor)
+        print(f"[people_details] {len(ids)} distinct person ids referenced in dw.")
+    else:
+        ids = _get_scope_person_ids(cursor, scope)
+
+    if not refresh:
+        try:
+            cursor.execute("SELECT id FROM dw.people_details")
+            loaded = {int(r[0]) for r in cursor.fetchall() if r[0] is not None}
+            ids -= loaded
+        except pyodbc.Error:
+            # First run: dlt hasn't created dw.people_details yet.
+            pass
+    conn.close()
+    print(f"[people_details] {len(ids)} people to fetch (scope={scope}, refresh={refresh}).")
+    return sorted(ids)
+
+
+def _get_scope_person_ids(cursor, scope: str) -> set:
+    """Person ids for the coaches / all / awards scopes."""
     id_sql = {
         "coaches": "SELECT DISTINCT person_id AS id FROM dw.team_coaches",
         "all": """
@@ -1253,22 +1344,8 @@ def get_person_ids_needing_details(scope: str = "coaches", refresh: bool = False
         """,
     }[scope]
 
-    conn = pyodbc.connect(DW_CONNECTION_STRING, timeout=10)
-    cursor = conn.cursor()
     cursor.execute(id_sql)
-    ids = {r[0] for r in cursor.fetchall() if r[0] is not None}
-
-    if not refresh:
-        try:
-            cursor.execute("SELECT id FROM dw.people_details")
-            loaded = {r[0] for r in cursor.fetchall()}
-            ids -= loaded
-        except pyodbc.Error:
-            # First run: dlt hasn't created dw.people_details yet.
-            pass
-    conn.close()
-    print(f"[people_details] {len(ids)} people to fetch (scope={scope}, refresh={refresh}).")
-    return sorted(ids)
+    return {int(r[0]) for r in cursor.fetchall() if r[0] is not None}
 
 
 def fetch_people_batch(person_ids: list) -> list:
@@ -1323,19 +1400,33 @@ def people_details_resource(scope: str = "coaches", refresh: bool = False):
 
     chunks = [person_ids[i:i + PEOPLE_BATCH_SIZE] for i in range(0, len(person_ids), PEOPLE_BATCH_SIZE)]
     done = 0
+    returned = set()
+    failed_ids = set()
     with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(fetch_people_batch, chunk): chunk[0] for chunk in chunks}
+        futures = {executor.submit(fetch_people_batch, chunk): chunk for chunk in chunks}
         for future in as_completed(futures):
             done += 1
+            chunk = futures[future]
             try:
                 rows = future.result()
             except Exception as e:
-                print(f"[people_details] batch starting at id {futures[future]} failed: {e}")
+                failed_ids.update(chunk)
+                print(f"[people_details] batch starting at id {chunk[0]} failed: {e}")
                 continue
+            returned.update(r["id"] for r in rows if r.get("id") is not None)
             if rows:
                 yield rows
             if done % 50 == 0:
                 print(f"[people_details] {done}/{len(chunks)} batches")
+
+    # Ids the API answered for but had no person. They stay "missing", so
+    # they are requested again on every run; this list shows which ones.
+    not_returned = sorted(set(person_ids) - returned - failed_ids)
+    print(f"[people_details] loaded {len(returned)} of {len(person_ids)} people; "
+          f"{len(failed_ids)} in failed batches (retried next run).")
+    if not_returned:
+        print(f"[people_details] not returned by the API ({len(not_returned)}): "
+              f"{not_returned[:100]}" + (" ..." if len(not_returned) > 100 else ""))
 
 
 # ----------------------------
@@ -2014,7 +2105,8 @@ def stats_resource(start_year: int = None, end_year: int = None):
     write_disposition="merge",
     primary_key=("gamePk", "playId"),
 )
-def play_events_resource(start_year: int = None, end_year: int = None, reload: bool = False):
+def play_events_resource(start_year: int = None, end_year: int = None, reload: bool = False,
+                         max_games: int = None):
     """
     Pitch-level play-by-play for every Final game in dw.games that doesn't
     have it yet.
@@ -2027,6 +2119,9 @@ def play_events_resource(start_year: int = None, end_year: int = None, reload: b
       - --start-year/--end-year: the same, limited to those seasons.
       - --reload (with years): re-fetches games already loaded too (merge
         updates them in place), e.g. to backfill new fields.
+      - --max-games N: load at most N games this run (oldest game_pk
+        first). Games left out are still "missing", so the next run picks
+        them up -- run it repeatedly to backfill in chunks.
 
     Previously the daily run only asked the schedule for games on or after
     MAX(game_date) in dw.games. pipeline.py loads games first, so that was
@@ -2041,6 +2136,12 @@ def play_events_resource(start_year: int = None, end_year: int = None, reload: b
         end_year = current_year
 
     games = get_games_for_play_events(start_year, end_year, include_loaded=reload)
+
+    if max_games is not None and len(games) > max_games:
+        print(f"[play_events] --max-games {max_games}: loading {max_games} of {len(games)} games; "
+              f"the rest will be picked up on later runs")
+        games = games[:max_games]
+
     if reload:
         print(f"[play_events] --reload: re-fetching all {len(games)} Final games "
               f"in dw.games for {start_year}-{end_year}")
@@ -2114,13 +2215,16 @@ if __name__ == "__main__":
     parser.add_argument("resource", help="Resource to run (e.g. play_events, games, seasons)")
     parser.add_argument("--start-year", type=int, default=None)
     parser.add_argument("--end-year", type=int, default=None)
-    parser.add_argument("--scope", choices=["coaches", "all", "awards"], default="coaches",
+    parser.add_argument("--scope", choices=["coaches", "all", "awards", "missing"], default="coaches",
                         help="people_details only: fetch coaches (default), coaches + all players, "
-                             "or every award recipient")
+                             "every award recipient, or 'missing' = every person id referenced "
+                             "anywhere in dw that has no people_details row yet")
     parser.add_argument("--refresh", action="store_true",
                         help="people_details only: re-fetch people already loaded")
     parser.add_argument("--reload", action="store_true",
                         help="play_events only: re-fetch games already loaded (use with --start-year/--end-year)")
+    parser.add_argument("--max-games", type=int, default=None,
+                        help="play_events only: load at most this many games per run")
     parser.add_argument("--team-ids", type=int, nargs="+", default=None,
                         help="missing_teams only: team ids to look up (default: award-recipient teams missing from dim_teams)")
     parser.add_argument("--venue-ids", type=int, nargs="+", default=None,
@@ -2134,7 +2238,7 @@ if __name__ == "__main__":
     )
 
     resources = {
-        "play_events": lambda: play_events_resource(args.start_year, args.end_year, args.reload),
+        "play_events": lambda: play_events_resource(args.start_year, args.end_year, args.reload, args.max_games),
         "games": lambda: games_resource(args.start_year, args.end_year),
         "seasons": lambda: seasons_resource(args.start_year, args.end_year),
         "teams": lambda: teams_resource(args.start_year, args.end_year),

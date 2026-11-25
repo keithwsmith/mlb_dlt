@@ -79,8 +79,8 @@ models:
         tests:
           - relationships:
               arguments:
-                to: ref('dim_player')
-                field: player_id
+                to: ref('dim_person')
+                field: person_id
               config:
                 severity: warn
 
@@ -1615,7 +1615,7 @@ models:
           - relationships:
               arguments:
                 to: ref('dim_person')
-                field: player_id
+                field: person_id
               config:
                 severity: warn
 

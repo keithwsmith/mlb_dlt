@@ -12,6 +12,8 @@ version: 2
 #   gold_league_season          one row per regular season (league context)
 #   gold_game_summary           one row per final game
 #   gold_umpire_season          one row per home-plate umpire per season
+#   gold_batter_pitcher_season  one row per batter x pitcher x regular season
+#   gold_batter_pitcher_career  one row per batter x pitcher, all seasons
 #   gold_data_quality_summary   one row per model: is it fit to use? (view)
 #
 # Tests use dbt_utils (unique_combination_of_columns, accepted_range,
@@ -715,3 +717,392 @@ models:
           - accepted_values:
               arguments:
                 values: ['red', 'amber', 'green']
+
+  # ============================================================
+  # gold_batter_pitcher_season
+  # ============================================================
+  - name: gold_batter_pitcher_season
+    description: >
+      One row per batter x pitcher x regular season: the head-to-head slash
+      line, strikeouts and walks, plate discipline and quality of contact.
+      Built from int_batter_pitcher_pa; stat definitions are shared with
+      gold_batter_pitcher_career (macros/batter_pitcher_metrics.sql). Samples
+      are small -- filter on plate_appearances before comparing rates.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [season, batter_id, pitcher_id]
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "hits <= at_bats"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "at_bats <= plate_appearances"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "singles + doubles + triples + home_runs = hits"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "intentional_walks <= walks"
+    columns:
+      - name: matchup_key
+        description: Surrogate key from season, batter_id, pitcher_id.
+        tests: [unique, not_null]
+      - name: season
+        description: Season year.
+        tests: [not_null]
+      - name: batter_id
+        description: MLB id of the batter.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_person')
+                field: person_id
+              config:
+                severity: warn
+      - name: batter_name
+        description: Batter name.
+      - name: batter_side
+        description: Side the batter hit from against this pitcher (L/R).
+      - name: pitcher_id
+        description: MLB id of the pitcher.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_person')
+                field: person_id
+              config:
+                severity: warn
+      - name: pitcher_name
+        description: Pitcher name.
+      - name: pitcher_hand
+        description: Pitcher's throwing hand (L/R).
+      - name: games_faced
+        description: Games in which the batter had a plate appearance against the pitcher.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+      - name: first_faced_date
+        description: First game date they faced each other.
+      - name: last_faced_date
+        description: Latest game date they faced each other.
+      - name: plate_appearances
+        description: Plate appearances (excludes truncated_pa). Pitchless intentional walks (2017+) are not included.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+      - name: pa_with_result
+        description: Plate appearances with a recorded result; denominator for strikeout_pct and walk_pct.
+      - name: at_bats
+        description: PA minus walks, HBP, sacrifice flies, sacrifice bunts and catcher's interference.
+      - name: hits
+        description: Hits.
+      - name: singles
+        description: Singles.
+      - name: doubles
+        description: Doubles.
+      - name: triples
+        description: Triples.
+      - name: home_runs
+        description: Home runs.
+      - name: total_bases
+        description: 1B + 2x2B + 3x3B + 4xHR.
+      - name: walks
+        description: Walks, including intentional walks.
+      - name: intentional_walks
+        description: Intentional walks that had a pitch (undercounts 2017+).
+      - name: strikeouts
+        description: Strikeouts (including strikeout double/triple plays).
+      - name: hit_by_pitch
+        description: Times hit by a pitch.
+      - name: sac_flies
+        description: Sacrifice flies.
+      - name: sac_bunts
+        description: Sacrifice bunts.
+      - name: gidp
+        description: Grounded into double play.
+      - name: pitches
+        description: Pitches seen (pitch-tracking rows).
+      - name: swings
+        description: Swings.
+      - name: whiffs
+        description: Swings and misses.
+      - name: called_strikes
+        description: Called strikes.
+      - name: tracked_pitches
+        description: Pitches with plate location data.
+      - name: pitches_outside_zone
+        description: Tracked pitches outside the strike zone.
+      - name: chases
+        description: Swings at tracked pitches outside the strike zone.
+      - name: avg_pitch_velo
+        description: Average release speed of the pitches seen (mph).
+      - name: batted_ball_events
+        description: Balls in play with exit velocity.
+      - name: avg_exit_velo
+        description: Average exit velocity (mph).
+      - name: max_exit_velo
+        description: Hardest-hit ball (mph).
+      - name: avg_launch_angle
+        description: Average launch angle (degrees).
+      - name: hard_hit_balls
+        description: Batted balls at 95+ mph.
+      - name: barrels
+        description: Barrels.
+      - name: batting_avg
+        description: H / AB.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: on_base_pct
+        description: (H + BB + HBP) / (AB + BB + HBP + SF).
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: slugging_pct
+        description: TB / AB.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 4
+      - name: ops
+        description: OBP + SLG (NULL when either is NULL).
+      - name: isolated_power
+        description: SLG - AVG.
+      - name: strikeout_pct
+        description: SO / PA with a result.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: walk_pct
+        description: BB / PA with a result.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: pitches_per_pa
+        description: Pitches / plate appearances.
+      - name: swing_pct
+        description: Swings / pitches.
+      - name: whiff_pct
+        description: Whiffs / swings.
+      - name: chase_pct
+        description: Chases / pitches outside the zone.
+      - name: csw_pct
+        description: (Called strikes + whiffs) / pitches.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: hard_hit_pct
+        description: Hard-hit balls / batted ball events.
+      - name: barrel_pct
+        description: Barrels / batted ball events.
+
+  # ============================================================
+  # gold_batter_pitcher_career
+  # ============================================================
+  - name: gold_batter_pitcher_career
+    description: >
+      One row per batter x pitcher across all regular seasons: the career
+      head-to-head record, with the same columns and definitions as
+      gold_batter_pitcher_season plus the seasons they faced each other.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [batter_id, pitcher_id]
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "hits <= at_bats"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "at_bats <= plate_appearances"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "singles + doubles + triples + home_runs = hits"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "intentional_walks <= walks"
+    columns:
+      - name: matchup_key
+        description: Surrogate key from batter_id, pitcher_id.
+        tests: [unique, not_null]
+      - name: seasons_faced
+        description: Seasons in which they faced each other.
+      - name: first_season
+        description: First season they faced each other.
+      - name: last_season
+        description: Latest season they faced each other.
+      - name: batter_id
+        description: MLB id of the batter.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_person')
+                field: person_id
+              config:
+                severity: warn
+      - name: batter_name
+        description: Batter name.
+      - name: batter_side
+        description: Side the batter hit from against this pitcher (L/R).
+      - name: pitcher_id
+        description: MLB id of the pitcher.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_person')
+                field: person_id
+              config:
+                severity: warn
+      - name: pitcher_name
+        description: Pitcher name.
+      - name: pitcher_hand
+        description: Pitcher's throwing hand (L/R).
+      - name: games_faced
+        description: Games in which the batter had a plate appearance against the pitcher.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+      - name: first_faced_date
+        description: First game date they faced each other.
+      - name: last_faced_date
+        description: Latest game date they faced each other.
+      - name: plate_appearances
+        description: Plate appearances (excludes truncated_pa). Pitchless intentional walks (2017+) are not included.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+      - name: pa_with_result
+        description: Plate appearances with a recorded result; denominator for strikeout_pct and walk_pct.
+      - name: at_bats
+        description: PA minus walks, HBP, sacrifice flies, sacrifice bunts and catcher's interference.
+      - name: hits
+        description: Hits.
+      - name: singles
+        description: Singles.
+      - name: doubles
+        description: Doubles.
+      - name: triples
+        description: Triples.
+      - name: home_runs
+        description: Home runs.
+      - name: total_bases
+        description: 1B + 2x2B + 3x3B + 4xHR.
+      - name: walks
+        description: Walks, including intentional walks.
+      - name: intentional_walks
+        description: Intentional walks that had a pitch (undercounts 2017+).
+      - name: strikeouts
+        description: Strikeouts (including strikeout double/triple plays).
+      - name: hit_by_pitch
+        description: Times hit by a pitch.
+      - name: sac_flies
+        description: Sacrifice flies.
+      - name: sac_bunts
+        description: Sacrifice bunts.
+      - name: gidp
+        description: Grounded into double play.
+      - name: pitches
+        description: Pitches seen (pitch-tracking rows).
+      - name: swings
+        description: Swings.
+      - name: whiffs
+        description: Swings and misses.
+      - name: called_strikes
+        description: Called strikes.
+      - name: tracked_pitches
+        description: Pitches with plate location data.
+      - name: pitches_outside_zone
+        description: Tracked pitches outside the strike zone.
+      - name: chases
+        description: Swings at tracked pitches outside the strike zone.
+      - name: avg_pitch_velo
+        description: Average release speed of the pitches seen (mph).
+      - name: batted_ball_events
+        description: Balls in play with exit velocity.
+      - name: avg_exit_velo
+        description: Average exit velocity (mph).
+      - name: max_exit_velo
+        description: Hardest-hit ball (mph).
+      - name: avg_launch_angle
+        description: Average launch angle (degrees).
+      - name: hard_hit_balls
+        description: Batted balls at 95+ mph.
+      - name: barrels
+        description: Barrels.
+      - name: batting_avg
+        description: H / AB.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: on_base_pct
+        description: (H + BB + HBP) / (AB + BB + HBP + SF).
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: slugging_pct
+        description: TB / AB.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 4
+      - name: ops
+        description: OBP + SLG (NULL when either is NULL).
+      - name: isolated_power
+        description: SLG - AVG.
+      - name: strikeout_pct
+        description: SO / PA with a result.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: walk_pct
+        description: BB / PA with a result.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: pitches_per_pa
+        description: Pitches / plate appearances.
+      - name: swing_pct
+        description: Swings / pitches.
+      - name: whiff_pct
+        description: Whiffs / swings.
+      - name: chase_pct
+        description: Chases / pitches outside the zone.
+      - name: csw_pct
+        description: (Called strikes + whiffs) / pitches.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: hard_hit_pct
+        description: Hard-hit balls / batted ball events.
+      - name: barrel_pct
+        description: Barrels / batted ball events.

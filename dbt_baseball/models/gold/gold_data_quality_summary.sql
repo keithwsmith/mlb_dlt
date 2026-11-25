@@ -27,17 +27,32 @@
       amber -- tests warn, the latest run left 0 rows, or tests haven't run
                since the latest load
       green -- otherwise
+
+    Every row has a model_name: log rows whose model name is NULL, blank,
+    or ends in '.' (nothing left after the package prefix) are dropped
+    before anything is grouped or joined.
 */
 
-with pipeline_runs as (
+with pipeline_runs_named as (
+
+    select
+        p.*,
+        nullif(ltrim(rtrim(
+            case
+                when charindex('.', p.model_name) > 0
+                then right(p.model_name, charindex('.', reverse(p.model_name)) - 1)
+                else p.model_name
+            end
+        )), '')                                                             as short_model_name
+    from {{ source('ops', 'pipeline') }} p
+
+),
+
+pipeline_runs as (
 
     select
         id,
-        case
-            when charindex('.', model_name) > 0
-            then right(model_name, charindex('.', reverse(model_name)) - 1)
-            else model_name
-        end                                                                 as model_name,
+        short_model_name                                                    as model_name,
         model_layer,
         lower(status)                                                       as status,
         start_record_count,
@@ -46,7 +61,8 @@ with pipeline_runs as (
         elapsed_seconds,
         start_time,
         error_message
-    from {{ source('ops', 'pipeline') }}
+    from pipeline_runs_named
+    where short_model_name is not null
 
 ),
 
@@ -76,25 +92,38 @@ recent_runs as (
 
 ),
 
+test_log_named as (
+
+    select
+        nullif(ltrim(rtrim(
+            case
+                when charindex('.', l.model_name) > 0
+                then right(l.model_name, charindex('.', reverse(l.model_name)) - 1)
+                else l.model_name
+            end
+        )), '')                                                             as model_name,
+        l.test_name,
+        lower(l.status)                                                     as status,
+        l.failures,
+        l.run_started_at
+    from {{ source('ops', 'dbt_test_log') }} l
+
+),
+
 latest_tests as (
 
     select *
     from (
         select
-            case
-                when charindex('.', model_name) > 0
-                then right(model_name, charindex('.', reverse(model_name)) - 1)
-                else model_name
-            end                                                             as model_name,
-            test_name,
-            lower(status)                                                   as status,
-            failures,
-            run_started_at,
+            *,
+            -- Partitions on the short name, so 'pkg.model' and 'model'
+            -- count as the same model.
             row_number() over (
                 partition by model_name, test_name
                 order by run_started_at desc
             )                                                               as rn
-        from {{ source('ops', 'dbt_test_log') }}
+        from test_log_named
+        where model_name is not null
     ) t
     where rn = 1
 
@@ -160,3 +189,4 @@ left join recent_runs h
     on h.model_name = m.model_name
 left join test_summary t
     on t.model_name = m.model_name
+where m.model_name is not null

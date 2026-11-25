@@ -53,7 +53,7 @@ models:
           - not_null
           - accepted_values:
               arguments:
-                values: ['Regular Season']
+                values: ['R']
 
       - name: game_date
         description: Official date of the game (used for chronological ordering throughout this model).
@@ -947,8 +947,8 @@ models:
           - not_null
           - relationships:
               arguments:
-                to: ref('dim_player')
-                field: player_id
+                to: ref('dim_person')
+                field: person_id
               config:
                 severity: warn
 
@@ -1235,3 +1235,157 @@ models:
           - accepted_values:
               arguments:
                 values: ['Ahead', 'Behind', 'Even']
+
+  # ────────────────────────────────────────────────────────────────────
+  - name: int_batter_pitcher_pa
+    description: >
+      One row per plate appearance (regular season, final games) with the
+      batter, the pitcher MLB credits with the PA, the result (from
+      stg_play_events.result_event_type) as 0/1 flags, and per-PA pitch and
+      contact numbers. Source for gold_batter_pitcher_season and
+      gold_batter_pitcher_career. Excludes truncated_pa; pitchless
+      intentional walks (2017+) are not in pitch data and so are missing.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [game_pk, at_bat_index]
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "is_hit <= is_at_bat"
+    columns:
+      - name: pa_key
+        description: Surrogate key from game_pk + at_bat_index.
+        tests: [unique, not_null]
+      - name: game_pk
+        description: MLB game id.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_games')
+                field: game_pk
+      - name: season
+        description: Season year.
+        tests: [not_null]
+      - name: at_bat_index
+        description: Plate appearance index within the game.
+        tests: [not_null]
+      - name: batter_id
+        description: Batter id.
+        tests: [not_null]
+      - name: pitcher_id
+        description: Pitcher credited with the plate appearance.
+        tests: [not_null]
+      - name: event_type
+        description: Plate-appearance result (lower-case MLB eventType, e.g. single, walk, field_out). NULL when not recorded.
+      - name: total_bases
+        description: 0-4 bases for the hit.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 4
+      - name: has_result
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: is_single
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: is_double
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: is_triple
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: is_home_run
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: is_walk
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: is_intentional_walk
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: is_strikeout
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: is_hit_by_pitch
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: is_sac_fly
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: is_sac_bunt
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: is_catcher_interference
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: is_gidp
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: is_hit
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: is_at_bat
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: is_hard_hit
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: is_barrel
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+

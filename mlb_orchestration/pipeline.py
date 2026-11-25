@@ -102,16 +102,20 @@ GOLD_SCHEMA = "gold"
 # Run in this order (one at a time -- see run_all_dimensions).
 # stg_milb_players must come before dim_player, and dim_person after it
 # (dim_person reads dim_player plus dw.team_coaches and dw.people_details).
+# dim_player_stats and dim_player_stats_by_date are NOT here: they read
+# int_player_game_stats, which is built in the fact stage, so they run there
+# (see FACT_MODEL_DEPENDENCIES).
 DIMENSION_MODELS = [
     "stg_play_events", "stg_milb_players", "stg_rosters", "stg_player_transactions",
     "dim_award", "dim_date", "dim_games", "dim_game_status", "dim_game_type",
     "dim_game_umpires", "dim_challenges", "dim_game_details", "dim_pitch_type",
     "dim_player", "dim_person", "dim_position", "dim_school",
     "dim_season", "dim_teams", "dim_venue", "dim_zone", "dim_draft",
-    "dim_award_recipient", "dim_player_stats",
+    "dim_award_recipient",
 ]
 intermediate = [
-    "int_pitches_enriched","int_team_game_results","int_team_game_results_to_date","int_player_game_stats"
+    "int_pitches_enriched","int_team_game_results","int_team_game_results_to_date","int_player_game_stats",
+    "int_team_game_box", "int_batter_pitcher_pa",
 ]
 # NOTE: `intermediate` above is informational only -- it is never iterated
 # anywhere in run_pipeline(). Actual execution/sequencing is driven entirely
@@ -128,12 +132,14 @@ FACT_MODEL_DEPENDENCIES = {
     "fact_games": [
         "dim_date", "dim_teams", "dim_venue",
         "dim_season", "dim_game_type", "dim_game_status",
+        "dim_games", "dim_game_details",
+        "int_team_game_box",    # per-team box score summed from player lines
     ],
     "fact_at_bats": ["stg_play_events"],
     "fact_player_stats": ["dim_player", "dim_teams", "dim_season"],
     "fact_draft": ["dim_draft"],
     "fact_batted_balls": ["stg_play_events"],
-    "int_pitches_enriched": [],
+    "int_pitches_enriched": ["stg_play_events", "dim_zone"],
     # Standings chain -- NOT "fact_"-prefixed models, but placed here
     # (rather than MART_DEPENDENCIES) because run_all_facts() does
     # multi-round topological resolution and can handle
@@ -150,6 +156,20 @@ FACT_MODEL_DEPENDENCIES = {
     # never actually built by this script; the gold season models read it,
     # so it is now built here (reads dim_games + dw.player_game_stats).
     "int_player_game_stats": ["dim_games"],
+    # Team box score per game, summed from int_player_game_stats; read by
+    # fact_games.
+    "int_team_game_box": ["int_player_game_stats"],
+    # Per-player game stats and season-to-date totals. Both read
+    # int_player_game_stats, so they run here rather than with the
+    # dimensions (where they'd read the previous run's data).
+    "dim_player_stats": ["int_player_game_stats"],
+    "dim_player_stats_by_date": ["dim_player_stats"],
+    # One row per plate appearance with batter, pitcher and result; read by
+    # the gold batter-vs-pitcher models.
+    "int_batter_pitcher_pa": [
+        "dim_games", "stg_play_events", "fact_at_bats",
+        "fact_batted_balls", "int_pitches_enriched",
+    ],
     "dim_team_standings": ["int_team_game_results"],
     "fact_umpire_performance": [
         "dim_challenges",       # challenge outcomes rolled up per game
@@ -198,6 +218,10 @@ GOLD_DEPENDENCIES = {
         "dim_games", "dim_game_umpires", "fact_umpire_performance",
         "mart_pitcher_game",
     ],
+    # Batter vs pitcher, per season and career (both read the plate
+    # appearances in int_batter_pitcher_pa).
+    "gold_batter_pitcher_season": ["int_batter_pitcher_pa"],
+    "gold_batter_pitcher_career": ["int_batter_pitcher_pa"],
     # A view over dbo.pipeline and dbo.dbt_test_log (created by
     # ensure_pipeline_table), so it has no model dependencies.
     "gold_data_quality_summary": [],

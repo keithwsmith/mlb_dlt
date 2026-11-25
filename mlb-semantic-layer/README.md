@@ -296,4 +296,4 @@ column in the `silver` schema.
 [mlb_dlt](https://github.com/keithwsmith/mlb_dlt.git) — MLB Stats API → SQL Server data warehouse
 
 ---
-*Generated 2026-11-20*
+*Generated 2026-11-24*
