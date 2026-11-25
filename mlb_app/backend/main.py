@@ -161,6 +161,17 @@ def get_player_transactions(player_id: int):
     return run_query(queries.PLAYER_TRANSACTIONS, (player_id,))
 
 
+@app.get("/api/players/{player_id}/matchups")
+def get_player_matchups(player_id: int, game_pk: int, role: str = "batter"):
+    """Matchup popup on the game page: the player's career head-to-head
+    (gold.gold_batter_pitcher_career) against every opponent in game_pk --
+    opposing pitchers who pitched (role=batter) or opposing batters who
+    batted (role=pitcher). Opponents never faced come back with NULL stats.
+    Params for both queries: (player_id, game_pk, player_id)."""
+    sql = queries.PLAYER_MATCHUPS_AS_PITCHER if role == "pitcher" else queries.PLAYER_MATCHUPS_AS_BATTER
+    return run_query(sql, (player_id, game_pk, player_id))
+
+
 @app.get("/api/players/{player_id}/season-stats")
 def get_player_season_stats(player_id: int):
     return run_query(queries.PLAYER_SEASON_STATS, (player_id,))

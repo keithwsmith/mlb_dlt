@@ -46,7 +46,7 @@ function useApi(path, enabled = true) {
   return state;
 }
 
-function Modal({ title, onClose, children }) {
+function Modal({ title, onClose, children, wide }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
@@ -55,7 +55,7 @@ function Modal({ title, onClose, children }) {
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-panel panel" onClick={(e) => e.stopPropagation()}>
+      <div className={"modal-panel panel" + (wide ? " modal-panel--wide" : "")} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h3 className="panel-title" style={{ margin: 0 }}>{title}</h3>
           <button className="back-link" onClick={onClose}>Close</button>
@@ -118,6 +118,94 @@ function PlayerTransactionsModal({ playerId, playerName, onClose }) {
       {transactions.loading ? <Loading /> : transactions.error ? <ErrorBox message={transactions.error} /> :
         !transactions.data?.length ? <EmptyState label="No transactions on record" /> :
         <DataTable rows={transactions.data} columns={columns} />}
+    </Modal>
+  );
+}
+
+// --- Matchup popup -------------------------------------------------------
+// Number formats for the matchup table. Rates and percentages arrive as
+// fractions (0.333, 0.245).
+const fmtBlank = (v) => v === null || v === undefined || v === "";
+const fmtVal = (v) => (fmtBlank(v) ? "—" : String(v));
+const fmtRate = (v) => (fmtBlank(v) ? "—" : Number(v).toFixed(3).replace(/^0(?=\.)/, ""));   // .333
+const fmtPct = (v) => (fmtBlank(v) ? "—" : `${(Number(v) * 100).toFixed(1)}%`);              // 24.5%
+const fmtOne = (v) => (fmtBlank(v) ? "—" : Number(v).toFixed(1));                            // 93.4
+
+// role: "batter" -> rows are the opposing pitchers who pitched in this game;
+//       "pitcher" -> rows are the opposing batters who batted in this game.
+// Data: career head-to-head from gold.gold_batter_pitcher_career.
+function PlayerMatchupModal({ playerId, playerName, gamePk, role, onClose }) {
+  const matchups = useApi(`/players/${playerId}/matchups?game_pk=${gamePk}&role=${role}`);
+  const asPitcher = role === "pitcher";
+  const rows = matchups.data || [];
+  const faced = rows.filter((r) => !fmtBlank(r.plate_appearances)).length;
+
+  const handLabel = (r) => {
+    if (fmtBlank(r.opponent_hand)) return null;
+    return asPitcher ? `bats ${r.opponent_hand}` : `${r.opponent_hand}HP`;
+  };
+
+  const columns = [
+    {
+      key: "opponent_name",
+      label: asPitcher ? "Batter" : "Pitcher",
+      render: (r) => (
+        <span>
+          {r.opponent_name}
+          {handLabel(r) && <span className="mono"> · {handLabel(r)}</span>}
+          {fmtBlank(r.plate_appearances) && <span className="mono"> · never faced</span>}
+        </span>
+      ),
+    },
+    {
+      key: "seasons",
+      label: "Seasons",
+      render: (r) => fmtBlank(r.first_season) ? "—"
+        : r.first_season === r.last_season ? String(r.first_season)
+        : `${r.first_season}–${r.last_season}`,
+    },
+    { key: "plate_appearances", label: "PA", render: (r) => fmtVal(r.plate_appearances) },
+    { key: "at_bats", label: "AB", render: (r) => fmtVal(r.at_bats) },
+    { key: "hits", label: "H", render: (r) => fmtVal(r.hits) },
+    { key: "doubles", label: "2B", render: (r) => fmtVal(r.doubles) },
+    { key: "triples", label: "3B", render: (r) => fmtVal(r.triples) },
+    { key: "home_runs", label: "HR", render: (r) => fmtVal(r.home_runs) },
+    { key: "walks", label: "BB", render: (r) => fmtVal(r.walks) },
+    { key: "strikeouts", label: "SO", render: (r) => fmtVal(r.strikeouts) },
+    { key: "hit_by_pitch", label: "HBP", render: (r) => fmtVal(r.hit_by_pitch) },
+    { key: "batting_avg", label: "AVG", render: (r) => fmtRate(r.batting_avg) },
+    { key: "on_base_pct", label: "OBP", render: (r) => fmtRate(r.on_base_pct) },
+    { key: "slugging_pct", label: "SLG", render: (r) => fmtRate(r.slugging_pct) },
+    { key: "ops", label: "OPS", render: (r) => fmtRate(r.ops) },
+    { key: "strikeout_pct", label: "K%", render: (r) => fmtPct(r.strikeout_pct) },
+    { key: "walk_pct", label: "BB%", render: (r) => fmtPct(r.walk_pct) },
+    { key: "whiff_pct", label: "Whiff%", render: (r) => fmtPct(r.whiff_pct) },
+    { key: "chase_pct", label: "Chase%", render: (r) => fmtPct(r.chase_pct) },
+    { key: "csw_pct", label: "CSW%", render: (r) => fmtPct(r.csw_pct) },
+    { key: "avg_pitch_velo", label: "Velo", render: (r) => fmtOne(r.avg_pitch_velo) },
+    { key: "avg_exit_velo", label: "Exit Velo", render: (r) => fmtOne(r.avg_exit_velo) },
+    { key: "hard_hit_pct", label: "Hard Hit%", render: (r) => fmtPct(r.hard_hit_pct) },
+    { key: "barrel_pct", label: "Barrel%", render: (r) => fmtPct(r.barrel_pct) },
+    { key: "last_faced_date", label: "Last Faced", render: (r) => fmtBlank(r.last_faced_date) ? "—" : formatGameDate(r.last_faced_date) },
+  ];
+
+  const opponentTeam = rows[0]?.opponent_team;
+
+  return (
+    <Modal title={`${playerName || "Player " + playerId} — Matchups`} onClose={onClose} wide>
+      {matchups.loading ? <Loading /> : matchups.error ? <ErrorBox message={matchups.error} /> :
+        !rows.length ? <EmptyState label={asPitcher
+          ? "No opposing batters found for this game."
+          : "No opposing pitchers found for this game."} /> :
+        <>
+          <p className="matchup-note">
+            Career head-to-head vs the {rows.length} {asPitcher ? "batter" : "pitcher"}{rows.length === 1 ? "" : "s"}
+            {opponentTeam ? ` ${asPitcher ? "who batted" : "who pitched"} for ${opponentTeam}` : ""} in this game
+            {` · faced ${faced} of them`}. Regular season, every game on file (including games after this one).
+            Small samples: weigh the PA column.
+          </p>
+          <DataTable rows={rows} columns={columns} compact />
+        </>}
     </Modal>
   );
 }
@@ -427,12 +515,13 @@ function StatsTable({ title, rows, columns, onRowClick }) {
   );
 }
 
-// Appends an Actions column (YTD / Awards / Draft, optionally Transactions)
-// onto a base column set. `role` is "batter" or "pitcher" — passed straight
-// through to the YTD endpoint so the backend knows which dw view to query.
-// includeTransactions is opt-in so existing callers (GamePlayersStats) keep
-// their original 3-button layout unchanged.
-function withActions(baseColumns, role, onAction, includeTransactions = false) {
+// Appends an Actions column ([Matchup] / YTD / Awards / Draft, optionally
+// Transactions) onto a base column set. `role` is "batter" or "pitcher" —
+// passed straight through to the YTD and matchup endpoints so the backend
+// knows which side the player is on. includeTransactions and includeMatchup
+// are opt-in: the game box score (GamePlayersStats) shows Matchup, the
+// Players tab shows Transactions.
+function withActions(baseColumns, role, onAction, includeTransactions = false, includeMatchup = false) {
   return [
     ...baseColumns,
     {
@@ -440,6 +529,9 @@ function withActions(baseColumns, role, onAction, includeTransactions = false) {
       label: "Actions",
       render: (r) => (
         <div className="action-btns">
+          {includeMatchup && (
+            <button className="mini-btn" onClick={(e) => { e.stopPropagation(); onAction("matchup", r, role); }}>Matchup</button>
+          )}
           <button className="mini-btn" onClick={(e) => { e.stopPropagation(); onAction("ytd", r, role); }}>YTD</button>
           <button className="mini-btn" onClick={(e) => { e.stopPropagation(); onAction("awards", r, role); }}>Awards</button>
           <button className="mini-btn" onClick={(e) => { e.stopPropagation(); onAction("draft", r, role); }}>Draft</button>
@@ -454,7 +546,7 @@ function withActions(baseColumns, role, onAction, includeTransactions = false) {
 
 function GamePlayersStats({ gamePk }) {
   const stats = useApi(`/games/${gamePk}/players-stats`);
-  const [modal, setModal] = useState(null); // {type: 'ytd'|'awards'|'draft', id, name, role}
+  const [modal, setModal] = useState(null); // {type: 'matchup'|'ytd'|'awards'|'draft', id, name, role}
 
   if (stats.loading) return <Loading />;
   if (stats.error) return <ErrorBox message={stats.error} />;
@@ -477,14 +569,17 @@ function GamePlayersStats({ gamePk }) {
   return (
     <div>
       <StatsTable title={`${homeTeam} — Batting/Fielding`} rows={homeBatters}
-        columns={withActions(BATTER_FIELDER_COLUMNS, "batter", openModal)} />
+        columns={withActions(BATTER_FIELDER_COLUMNS, "batter", openModal, false, true)} />
       <StatsTable title={`${homeTeam} — Pitching`} rows={homePitchers}
-        columns={withActions(PITCHER_COLUMNS, "pitcher", openModal)} />
+        columns={withActions(PITCHER_COLUMNS, "pitcher", openModal, false, true)} />
       <StatsTable title={`${awayTeam} — Batting/Fielding`} rows={awayBatters}
-        columns={withActions(BATTER_FIELDER_COLUMNS, "batter", openModal)} />
+        columns={withActions(BATTER_FIELDER_COLUMNS, "batter", openModal, false, true)} />
       <StatsTable title={`${awayTeam} — Pitching`} rows={awayPitchers}
-        columns={withActions(PITCHER_COLUMNS, "pitcher", openModal)} />
+        columns={withActions(PITCHER_COLUMNS, "pitcher", openModal, false, true)} />
 
+      {modal?.type === "matchup" && (
+        <PlayerMatchupModal playerId={modal.id} playerName={modal.name} gamePk={gamePk} role={modal.role} onClose={() => setModal(null)} />
+      )}
       {modal?.type === "ytd" && (
         <PlayerYtdModal playerId={modal.id} playerName={modal.name} gamePk={gamePk} role={modal.role} onClose={() => setModal(null)} />
       )}

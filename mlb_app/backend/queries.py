@@ -588,6 +588,111 @@ GAME_TEAM_RECORDS = """
 """
 
 # ---------------------------------------------------------------------------
+# Batter vs pitcher matchups (game detail "Matchup" button)
+# ---------------------------------------------------------------------------
+# Career head-to-head from gold.gold_batter_pitcher_career (all regular
+# seasons on file), for one player against every opponent from one game:
+#   batter  -> each opposing pitcher who pitched in the game
+#   pitcher -> each opposing batter who batted in the game
+# Opponents come from silver.dim_player_stats (the same table and "did he
+# pitch / bat" rules as GAME_PLAYERS_STATS). The LEFT JOIN keeps opponents
+# they have never faced (all matchup columns NULL).
+# Params, in order: (player_id, game_pk, player_id).
+
+_PITCHED = """
+          (    TRY_CAST(s.pitching_outs_recorded AS DECIMAL(5,1)) > 0
+            OR s.pitching_hits_allowed > 0
+            OR s.pitching_runs_allowed > 0
+            OR s.pitching_earned_runs > 0
+            OR s.pitching_walks > 0
+            OR s.pitching_strikeouts > 0
+            OR s.pitching_home_runs_allowed > 0)
+"""
+
+_BATTED = """
+          (    s.batting_at_bats > 0
+            OR s.batting_runs > 0
+            OR s.batting_hits > 0
+            OR s.batting_walks > 0
+            OR s.batting_strikeouts > 0
+            OR s.batting_rbi > 0
+            OR s.batting_stolen_bases > 0)
+"""
+
+_MATCHUP_COLUMNS = """
+        m.seasons_faced,
+        m.first_season,
+        m.last_season,
+        m.games_faced,
+        m.last_faced_date,
+        m.plate_appearances,
+        m.at_bats,
+        m.hits,
+        m.doubles,
+        m.triples,
+        m.home_runs,
+        m.walks,
+        m.strikeouts,
+        m.hit_by_pitch,
+        CAST(m.batting_avg   AS DECIMAL(6,3)) AS batting_avg,
+        CAST(m.on_base_pct   AS DECIMAL(6,3)) AS on_base_pct,
+        CAST(m.slugging_pct  AS DECIMAL(6,3)) AS slugging_pct,
+        CAST(m.ops           AS DECIMAL(6,3)) AS ops,
+        CAST(m.strikeout_pct AS DECIMAL(6,3)) AS strikeout_pct,
+        CAST(m.walk_pct      AS DECIMAL(6,3)) AS walk_pct,
+        CAST(m.whiff_pct     AS DECIMAL(6,3)) AS whiff_pct,
+        CAST(m.chase_pct     AS DECIMAL(6,3)) AS chase_pct,
+        CAST(m.csw_pct       AS DECIMAL(6,3)) AS csw_pct,
+        m.avg_pitch_velo,
+        m.avg_exit_velo,
+        CAST(m.hard_hit_pct  AS DECIMAL(6,3)) AS hard_hit_pct,
+        CAST(m.barrel_pct    AS DECIMAL(6,3)) AS barrel_pct
+"""
+
+
+def _player_matchups_sql(role: str) -> str:
+    """role = 'batter': player is the batter, opponents are pitchers.
+    role = 'pitcher': player is the pitcher, opponents are batters."""
+    if role == "pitcher":
+        opponent_filter, join_opponent, join_player = _BATTED, "m.batter_id", "m.pitcher_id"
+        opponent_hand, player_side = "m.batter_side", "m.pitcher_hand"
+    else:
+        opponent_filter, join_opponent, join_player = _PITCHED, "m.pitcher_id", "m.batter_id"
+        opponent_hand, player_side = "m.pitcher_hand", "m.batter_side"
+
+    return f"""
+    WITH opponents AS (
+        SELECT s.player_id, s.player_name, s.team_name
+        FROM silver.dim_player_stats s
+        JOIN silver.dim_player_stats me
+          ON me.game_pk   = s.game_pk
+         AND me.player_id = ?                      -- param 1: player_id
+         AND me.is_home  <> s.is_home              -- the other team only
+        WHERE s.game_pk = ?                        -- param 2: game_pk
+          AND {opponent_filter}
+    )
+    SELECT
+        o.player_id   AS opponent_id,
+        o.player_name AS opponent_name,
+        o.team_name   AS opponent_team,
+        {opponent_hand} AS opponent_hand,
+        {player_side}   AS player_side,
+        {_MATCHUP_COLUMNS}
+    FROM opponents o
+    LEFT JOIN gold.gold_batter_pitcher_career m
+      ON {join_opponent} = o.player_id
+     AND {join_player}   = ?                       -- param 3: player_id
+    ORDER BY
+        CASE WHEN m.plate_appearances IS NULL THEN 1 ELSE 0 END,
+        m.plate_appearances DESC,
+        o.player_name
+"""
+
+
+PLAYER_MATCHUPS_AS_BATTER = _player_matchups_sql("batter")
+PLAYER_MATCHUPS_AS_PITCHER = _player_matchups_sql("pitcher")
+
+# ---------------------------------------------------------------------------
 # Matchups & Pitcher — NOT SPECIFIED
 # ---------------------------------------------------------------------------
 # The original request didn't describe what these two main-menu items

@@ -404,6 +404,20 @@ button, select { font-family: inherit; }
   margin-bottom: 0;
 }
 
+/* Matchup popup: a wide stats table, so the panel is wider than the
+   default 760px. The table still scrolls sideways on narrow screens. */
+.modal-panel--wide {
+  max-width: 1200px;
+}
+
+.matchup-note {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  margin: 0 0 12px;
+}
+
 .modal-header {
   display: flex;
   align-items: center;
